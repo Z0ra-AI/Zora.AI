@@ -3,7 +3,6 @@ A fully customizable native Android AI companion app. Bring your own API key, de
 
 How It Works
 Clone the repo, drop your master prompt into local_master_prompt.txt, put your API key in the app, and start chatting. That's it.
-git clone https://github.com/ChiVy2306/Zora.AI.git
 
 Setup
 
