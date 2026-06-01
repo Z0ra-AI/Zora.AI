@@ -1,12 +1,13 @@
 package com.yozora.aichat.data.db
 
 import androidx.room.Entity
+import androidx.room.ForeignKey
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import java.util.UUID
 
-@Entity(tableName = "personas")
 data class PersonaEntity(
-    @PrimaryKey val id: String = UUID.randomUUID().toString(),
+    val id: String = UUID.randomUUID().toString(),
     val name: String,
     val avatarUri: String?,
     val systemPrompt: String,
@@ -14,20 +15,59 @@ data class PersonaEntity(
     val temperature: Float = 1.0f
 )
 
-@Entity(tableName = "chats")
-data class ChatEntity(
-    @PrimaryKey val id: String = UUID.randomUUID().toString(),
-    val personaId: String,
-    val title: String,
-    val createdAt: Long,
-    val updatedAt: Long
+@Entity(tableName = "sessions")
+data class ChatSessionEntity(
+    @PrimaryKey val id: String,
+    val personaJson: String,
+    val activeMemberId: String,
+    val responseRounds: Int,
+    val backgroundJson: String,
+    val preview: String,
+    val updatedAt: String,
+    val sortOrder: Int
 )
 
-@Entity(tableName = "messages")
+@Entity(
+    tableName = "group_members",
+    foreignKeys = [
+        ForeignKey(
+            entity = ChatSessionEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["sessionId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [Index("sessionId")]
+)
+data class GroupMemberEntity(
+    @PrimaryKey val id: String,
+    val sessionId: String,
+    val personaJson: String,
+    val position: Int
+)
+
+@Entity(
+    tableName = "messages",
+    foreignKeys = [
+        ForeignKey(
+            entity = ChatSessionEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["chatId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [Index("chatId")]
+)
 data class MessageEntity(
     @PrimaryKey val id: String = UUID.randomUUID().toString(),
     val chatId: String,
     val role: String,
     val content: String,
-    val timestamp: Long
+    val timestamp: Long,
+    val speakerId: String? = null,
+    val speakerName: String? = null,
+    val imageUrisJson: String = "[]",
+    val remoteImageUrl: String? = null,
+    val time: String = "",
+    val position: Int = 0
 )

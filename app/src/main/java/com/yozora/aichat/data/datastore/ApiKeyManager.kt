@@ -16,7 +16,8 @@ class ApiKeyManager(
     private val keysKey = stringSetPreferencesKey("gemini_api_keys")
     private val activeIndexKey = intPreferencesKey("gemini_active_key_index")
     private val tavilyApiKey = stringPreferencesKey("tavily_api_key")
-    private val waifuApiToken = stringPreferencesKey("waifu_api_token")
+    private val r34ApiKey = stringPreferencesKey("r34_api_key")
+    private val r34UserId = stringPreferencesKey("r34_user_id")
 
     val keys: Flow<List<String>> = dataStore.data.map { preferences ->
         preferences[keysKey]?.toList().orEmpty()
@@ -118,28 +119,53 @@ class ApiKeyManager(
         }
     }
 
-    val waifuToken: Flow<String?> = dataStore.data.map { preferences ->
-        preferences[waifuApiToken]
+    val rule34ApiKey: Flow<String?> = dataStore.data.map { preferences ->
+        preferences[r34ApiKey]
     }
 
-    suspend fun keyForWaifu(): String? {
-        return dataStore.data.first()[waifuApiToken]
+    val rule34UserId: Flow<String?> = dataStore.data.map { preferences ->
+        preferences[r34UserId]
     }
 
-    suspend fun replaceWaifuToken(token: String) {
-        val trimmed = token.trim()
+    suspend fun keyForRule34Api(): String? {
+        return dataStore.data.first()[r34ApiKey]
+    }
+
+    suspend fun userIdForRule34(): String? {
+        return dataStore.data.first()[r34UserId]
+    }
+
+    suspend fun replaceRule34ApiKey(key: String) {
+        val trimmed = key.trim()
         dataStore.edit { preferences ->
             if (trimmed.isEmpty()) {
-                preferences.remove(waifuApiToken)
+                preferences.remove(r34ApiKey)
             } else {
-                preferences[waifuApiToken] = trimmed
+                preferences[r34ApiKey] = trimmed
             }
         }
     }
 
-    suspend fun clearWaifuToken() {
+    suspend fun replaceRule34UserId(userId: String) {
+        val trimmed = userId.trim()
         dataStore.edit { preferences ->
-            preferences.remove(waifuApiToken)
+            if (trimmed.isEmpty()) {
+                preferences.remove(r34UserId)
+            } else {
+                preferences[r34UserId] = trimmed
+            }
+        }
+    }
+
+    suspend fun clearRule34ApiKey() {
+        dataStore.edit { preferences ->
+            preferences.remove(r34ApiKey)
+        }
+    }
+
+    suspend fun clearRule34UserId() {
+        dataStore.edit { preferences ->
+            preferences.remove(r34UserId)
         }
     }
 

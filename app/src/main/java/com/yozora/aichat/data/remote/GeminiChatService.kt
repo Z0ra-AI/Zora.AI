@@ -29,30 +29,31 @@ data class GeminiChatReply(
     val totalTokenCount: Int
 )
 
+data class GeminiToolCall(
+    val name: String,
+    val args: JSONObject
+)
+
+data class GeminiToolPlan(
+    val text: String,
+    val functionCall: GeminiToolCall?,
+    val promptTokenCount: Int,
+    val responseTokenCount: Int,
+    val totalTokenCount: Int
+) {
+    fun toReply(): GeminiChatReply {
+        return GeminiChatReply(
+            text = text,
+            promptTokenCount = promptTokenCount,
+            responseTokenCount = responseTokenCount,
+            totalTokenCount = totalTokenCount
+        )
+    }
+}
+
 private const val FALLBACK_MASTER_PROMPT = """
 You are a customizable AI companion. Follow the persona instruction prompt for the active session, keep replies immersive and useful, and ask for clarification when the user request is unclear.
 """
-
-private val WAIFU_TAGS = setOf(
-    "waifu",
-    "ero",
-    "ecchi",
-    "oppai",
-    "hentai",
-    "milf",
-    "uniform",
-    "ass",
-    "maid",
-    "selfies",
-    "oral",
-    "paizuri",
-    "genshin-impact",
-    "raiden-shogun",
-    "marin-kitagawa",
-    "mori-calliope",
-    "kamisato-ayaka",
-    "rem"
-)
 
 class GeminiChatService {
     fun supportsImageInput(vendor: ApiVendor, model: String): Boolean {
@@ -80,10 +81,7 @@ class GeminiChatService {
         webSearchEnabled: Boolean,
         masterPrompt: String? = null
     ): Result<GeminiChatReply> = runCatching {
-        val baseMasterPrompt = masterPrompt?.takeIf { it.isNotBlank() } ?: FALLBACK_MASTER_PROMPT
-        val finalSystemPrompt = baseMasterPrompt.trimIndent() +
-            "\n\n---\n\n" +
-            persona.systemPrompt.trim()
+        val finalSystemPrompt = finalSystemPrompt(masterPrompt, persona)
 
         when (vendor) {
             ApiVendor.Google -> if (webSearchEnabled) {
@@ -131,27 +129,111 @@ class GeminiChatService {
         }
     }
 
-    suspend fun pickWaifuTag(
+    suspend fun planGeminiToolUse(
         apiKey: String,
-        userRequest: String
+        persona: PersonaEntity,
+        history: List<MessageEntity>,
+        userInput: String,
+        safetyLevel: SafetyLevel,
+        images: List<Bitmap>,
+        enabledTools: Set<String>,
+        masterPrompt: String? = null
+    ): Result<GeminiToolPlan> = runCatching {
+        planToolUse(
+            apiKey = apiKey,
+            vendor = ApiVendor.Google,
+            persona = persona,
+            history = history,
+            userInput = userInput,
+            safetyLevel = safetyLevel,
+            images = images,
+            enabledTools = enabledTools,
+            masterPrompt = masterPrompt
+        ).getOrThrow()
+    }
+
+    suspend fun planToolUse(
+        apiKey: String,
+        vendor: ApiVendor,
+        persona: PersonaEntity,
+        history: List<MessageEntity>,
+        userInput: String,
+        safetyLevel: SafetyLevel,
+        images: List<Bitmap>,
+        enabledTools: Set<String>,
+        masterPrompt: String? = null
+    ): Result<GeminiToolPlan> = runCatching {
+        require(enabledTools.isNotEmpty()) { "No tools enabled." }
+        val promptedSystem = finalSystemPrompt(masterPrompt, persona) + "\n\n" + toolUseInstruction(enabledTools)
+        when (vendor) {
+            ApiVendor.Google -> sendGeminiToolPlanning(
+                apiKey = apiKey,
+                persona = persona,
+                history = history,
+                userInput = userInput,
+                finalSystemPrompt = promptedSystem,
+                safetyLevel = safetyLevel,
+                images = images,
+                enabledTools = enabledTools
+            )
+
+            ApiVendor.Claude -> sendClaudeToolPlanning(
+                apiKey = apiKey,
+                persona = persona,
+                history = history,
+                userInput = userInput,
+                finalSystemPrompt = promptedSystem,
+                images = images,
+                enabledTools = enabledTools
+            )
+
+            ApiVendor.GPT,
+            ApiVendor.Grok,
+            ApiVendor.Mixtral -> sendOpenAiToolPlanning(
+                apiKey = apiKey,
+                vendor = vendor,
+                persona = persona,
+                history = history,
+                userInput = userInput,
+                finalSystemPrompt = promptedSystem,
+                images = images,
+                enabledTools = enabledTools
+            )
+        }
+    }
+
+    suspend fun pickRule34Tags(
+        apiKey: String,
+        userRequest: String,
+        presetHint: String = ""
     ): Result<String> = runCatching {
         val model = GenerativeModel(
             modelName = "gemini-3.1-flash-lite",
             apiKey = apiKey,
             generationConfig = generationConfig {
                 temperature = 0.1f
-                maxOutputTokens = 16
+                maxOutputTokens = 32
             },
             safetySettings = safetySettings(SafetyLevel.None)
         )
         val prompt = """
-            Pick exactly ONE tag from this list that best matches the user's request.
-            Available tags: waifu, ero, ecchi, oppai, hentai, milf, uniform, ass, maid, selfies, oral, paizuri, genshin-impact, raiden-shogun, marin-kitagawa, mori-calliope, kamisato-ayaka, rem
-            Output ONLY the tag name, nothing else.
-            User request: "$userRequest"
+            Convert this image request into Rule34/Danbooru search tags.
+            Preset guidance: $presetHint
+            Rules:
+            - Output ONLY the tags, space-separated
+            - Use underscores for spaces within a tag (e.g. long_hair, serious_face)
+            - Output 2 to 4 tags
+            - Put the most important request-specific tag first
+            - Put generic support tags like 1girl, 1boy, solo, looking_at_viewer last
+            - Prefer common Booru tags over invented mood or prose words
+            - Do NOT include rating tags
+            - Example output: maid black_hair large_breasts 1girl
+            Request: "$userRequest"
         """.trimIndent()
         val response = model.generateContent(prompt)
-        parseWaifuTag(response.text.orEmpty())
+        parseRule34Tags(response.text.orEmpty()).ifBlank {
+            fallbackRule34Tags(userRequest)
+        }
     }
 
     private suspend fun sendGemini(
@@ -251,6 +333,192 @@ class GeminiChatService {
             promptTokenCount = usage?.optInt("promptTokenCount") ?: 0,
             responseTokenCount = usage?.optInt("candidatesTokenCount") ?: 0,
             totalTokenCount = usage?.optInt("totalTokenCount") ?: 0
+        )
+    }
+
+    private suspend fun sendGeminiToolPlanning(
+        apiKey: String,
+        persona: PersonaEntity,
+        history: List<MessageEntity>,
+        userInput: String,
+        finalSystemPrompt: String,
+        safetyLevel: SafetyLevel,
+        images: List<Bitmap>,
+        enabledTools: Set<String>
+    ): GeminiToolPlan = withContext(Dispatchers.IO) {
+        val contents = JSONArray()
+        history.forEach { message ->
+            contents.put(
+                JSONObject()
+                    .put("role", if (message.role == "model") "model" else "user")
+                    .put("parts", JSONArray().put(JSONObject().put("text", message.content)))
+            )
+        }
+        contents.put(
+            JSONObject()
+                .put("role", "user")
+                .put("parts", geminiParts(userInput, images))
+        )
+
+        val body = JSONObject()
+            .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", finalSystemPrompt))))
+            .put("contents", contents)
+            .put(
+                "generationConfig",
+                JSONObject()
+                    .put("temperature", persona.temperature.toDouble())
+                    .put("maxOutputTokens", 8192)
+            )
+            .put("safetySettings", geminiRestSafetySettings(safetyLevel))
+            .put(
+                "tools",
+                JSONArray().put(
+                    JSONObject().put("functionDeclarations", geminiFunctionDeclarations(enabledTools))
+                )
+            )
+
+        val json = postJson(
+            url = "https://generativelanguage.googleapis.com/v1beta/models/${persona.model}:generateContent",
+            headers = mapOf("x-goog-api-key" to apiKey),
+            body = body
+        )
+        val candidate = json.getJSONArray("candidates").getJSONObject(0)
+        val parts = candidate.optJSONObject("content")?.optJSONArray("parts") ?: JSONArray()
+        var functionCall: GeminiToolCall? = null
+        val responseText = buildString {
+            for (index in 0 until parts.length()) {
+                val part = parts.optJSONObject(index) ?: continue
+                part.optString("text").takeIf { it.isNotBlank() }?.let { append(it) }
+                val call = part.optJSONObject("functionCall") ?: continue
+                functionCall = GeminiToolCall(
+                    name = call.optString("name"),
+                    args = call.optJSONObject("args") ?: JSONObject()
+                )
+            }
+        }
+        val usage = json.optJSONObject("usageMetadata")
+        GeminiToolPlan(
+            text = responseText,
+            functionCall = functionCall?.takeIf { it.name.isNotBlank() },
+            promptTokenCount = usage?.optInt("promptTokenCount") ?: 0,
+            responseTokenCount = usage?.optInt("candidatesTokenCount") ?: 0,
+            totalTokenCount = usage?.optInt("totalTokenCount") ?: 0
+        )
+    }
+
+    private suspend fun sendOpenAiToolPlanning(
+        apiKey: String,
+        vendor: ApiVendor,
+        persona: PersonaEntity,
+        history: List<MessageEntity>,
+        userInput: String,
+        finalSystemPrompt: String,
+        images: List<Bitmap>,
+        enabledTools: Set<String>
+    ): GeminiToolPlan = withContext(Dispatchers.IO) {
+        val url = when (vendor) {
+            ApiVendor.GPT -> "https://api.openai.com/v1/chat/completions"
+            ApiVendor.Grok -> "https://api.x.ai/v1/chat/completions"
+            ApiVendor.Mixtral -> "https://api.mistral.ai/v1/chat/completions"
+            else -> error("Unsupported OpenAI-compatible vendor")
+        }
+        val messages = JSONArray()
+            .put(JSONObject().put("role", "system").put("content", finalSystemPrompt))
+        history.forEach { message ->
+            val role = if (message.role == "model") "assistant" else message.role
+            messages.put(JSONObject().put("role", role).put("content", message.content))
+        }
+        messages.put(JSONObject().put("role", "user").put("content", openAiUserContent(userInput, images)))
+
+        val body = JSONObject()
+            .put("model", persona.model)
+            .put("messages", messages)
+            .put("temperature", persona.temperature.toDouble())
+            .put("max_tokens", 4096)
+            .put("tools", openAiTools(enabledTools))
+            .put("tool_choice", "auto")
+
+        val json = postJson(
+            url = url,
+            headers = mapOf("Authorization" to "Bearer $apiKey"),
+            body = body
+        )
+        val message = json.getJSONArray("choices").getJSONObject(0).getJSONObject("message")
+        val toolCall = message.optJSONArray("tool_calls")
+            ?.optJSONObject(0)
+            ?.optJSONObject("function")
+            ?.let { function ->
+                GeminiToolCall(
+                    name = function.optString("name"),
+                    args = parseJsonObject(function.optString("arguments"))
+                )
+            }
+        val usage = json.optJSONObject("usage")
+        GeminiToolPlan(
+            text = extractOpenAiContent(message),
+            functionCall = toolCall?.takeIf { it.name.isNotBlank() },
+            promptTokenCount = usage?.optInt("prompt_tokens") ?: 0,
+            responseTokenCount = usage?.optInt("completion_tokens") ?: 0,
+            totalTokenCount = usage?.optInt("total_tokens") ?: 0
+        )
+    }
+
+    private suspend fun sendClaudeToolPlanning(
+        apiKey: String,
+        persona: PersonaEntity,
+        history: List<MessageEntity>,
+        userInput: String,
+        finalSystemPrompt: String,
+        images: List<Bitmap>,
+        enabledTools: Set<String>
+    ): GeminiToolPlan = withContext(Dispatchers.IO) {
+        val messages = JSONArray()
+        history.forEach { message ->
+            val role = if (message.role == "model") "assistant" else "user"
+            messages.put(JSONObject().put("role", role).put("content", message.content))
+        }
+        messages.put(JSONObject().put("role", "user").put("content", claudeUserContent(userInput, images)))
+
+        val body = JSONObject()
+            .put("model", persona.model)
+            .put("system", finalSystemPrompt)
+            .put("messages", messages)
+            .put("temperature", persona.temperature.toDouble())
+            .put("max_tokens", 4096)
+            .put("tools", claudeTools(enabledTools))
+            .put("tool_choice", JSONObject().put("type", "auto"))
+
+        val json = postJson(
+            url = "https://api.anthropic.com/v1/messages",
+            headers = mapOf(
+                "x-api-key" to apiKey,
+                "anthropic-version" to "2023-06-01"
+            ),
+            body = body
+        )
+        val content = json.getJSONArray("content")
+        var toolCall: GeminiToolCall? = null
+        val text = buildString {
+            for (index in 0 until content.length()) {
+                val part = content.optJSONObject(index) ?: continue
+                when (part.optString("type")) {
+                    "text" -> append(part.optString("text"))
+                    "tool_use" -> toolCall = GeminiToolCall(
+                        name = part.optString("name"),
+                        args = part.optJSONObject("input") ?: JSONObject()
+                    )
+                }
+            }
+        }
+        val usage = json.optJSONObject("usage")
+        val inputTokens = usage?.optInt("input_tokens") ?: 0
+        val outputTokens = usage?.optInt("output_tokens") ?: 0
+        GeminiToolPlan(
+            text = text,
+            functionCall = toolCall?.takeIf { it.name.isNotBlank() },
+            promptTokenCount = inputTokens,
+            responseTokenCount = outputTokens,
+            totalTokenCount = inputTokens + outputTokens
         )
     }
 
@@ -357,15 +625,182 @@ class GeminiChatService {
         )
     }
 
-    private fun parseWaifuTag(raw: String): String {
-        val firstWord = raw
+    private fun finalSystemPrompt(masterPrompt: String?, persona: PersonaEntity): String {
+        val baseMasterPrompt = masterPrompt?.takeIf { it.isNotBlank() } ?: FALLBACK_MASTER_PROMPT
+        return baseMasterPrompt.trimIndent() +
+            "\n\n---\n\n" +
+            persona.systemPrompt.trim()
+    }
+
+    private fun toolUseInstruction(enabledTools: Set<String>): String {
+        return buildString {
+            appendLine("App tool policy:")
+            appendLine("- The following function tools are enabled by the user in the app UI and relevant to the current message: ${enabledTools.joinToString()}.")
+            appendLine("- If a tool is listed here, that tool is ON. If a tool is not listed here, treat it as OFF or unavailable.")
+            appendLine("- Decide tool use only from the current user message, not from an older request in chat history.")
+            appendLine("- If the user is only chatting, answer normally without calling a tool.")
+            if ("web_search" in enabledTools) {
+                appendLine("- Call web_search only when the current message asks for current, recent, factual, source-backed, or explicitly searched information.")
+            }
+            if ("anime_image_search" in enabledTools) {
+                appendLine("- Call anime_image_search only when the current message asks you to show, find, fetch, get, or display an anime-style image.")
+            }
+            appendLine("- Do not claim a tool was used unless you call it.")
+        }
+    }
+
+    private fun geminiFunctionDeclarations(enabledTools: Set<String>): JSONArray {
+        return JSONArray().apply {
+            if ("web_search" in enabledTools) {
+                put(
+                    JSONObject()
+                        .put("name", "web_search")
+                        .put("description", "Search the web for current or source-backed information.")
+                        .put(
+                            "parameters",
+                            JSONObject()
+                                .put("type", "OBJECT")
+                                .put(
+                                    "properties",
+                                    JSONObject().put(
+                                        "query",
+                                        JSONObject()
+                                            .put("type", "STRING")
+                                            .put("description", "The search query to retrieve web context for.")
+                                    )
+                                )
+                                .put("required", JSONArray().put("query"))
+                        )
+                )
+            }
+            if ("anime_image_search" in enabledTools) {
+                put(
+                    JSONObject()
+                        .put("name", "anime_image_search")
+                        .put("description", "Find an anime-style image matching the user's request.")
+                        .put(
+                            "parameters",
+                            JSONObject()
+                                .put("type", "OBJECT")
+                                .put(
+                                    "properties",
+                                    JSONObject()
+                                        .put(
+                                            "request",
+                                            JSONObject()
+                                                .put("type", "STRING")
+                                                .put("description", "The user's image request in natural language.")
+                                        )
+                                        .put(
+                                            "preset",
+                                            JSONObject()
+                                                .put("type", "STRING")
+                                                .put("description", "Optional image preset: auto, portrait, character, or explicit.")
+                                        )
+                                )
+                                .put("required", JSONArray().put("request"))
+                        )
+                )
+            }
+        }
+    }
+
+    private fun openAiTools(enabledTools: Set<String>): JSONArray {
+        return JSONArray().apply {
+            geminiFunctionDeclarations(enabledTools).forEachObject { declaration ->
+                put(
+                    JSONObject()
+                        .put("type", "function")
+                        .put("function", declaration)
+                )
+            }
+        }
+    }
+
+    private fun claudeTools(enabledTools: Set<String>): JSONArray {
+        return JSONArray().apply {
+            geminiFunctionDeclarations(enabledTools).forEachObject { declaration ->
+                put(
+                    JSONObject()
+                        .put("name", declaration.optString("name"))
+                        .put("description", declaration.optString("description"))
+                        .put("input_schema", declaration.optJSONObject("parameters") ?: JSONObject())
+                )
+            }
+        }
+    }
+
+    private fun parseRule34Tags(raw: String): String {
+        return raw
             .trim()
             .substringBefore('\n')
-            .substringBefore(' ')
-            .substringBefore(',')
-            .trim('"', '\'', '`', ':', '.', ';')
             .lowercase(Locale.US)
-        return firstWord.takeIf { it in WAIFU_TAGS } ?: "waifu"
+            .replace(',', ' ')
+            .split(Regex("\\s+"))
+            .map { tag ->
+                tag.trim('"', '\'', '`', ':', '.', ';')
+                    .replace('-', '_')
+                    .replace(Regex("[^a-z0-9_]+"), "_")
+                    .trim('_')
+            }
+            .filter { tag -> tag.isNotBlank() && !tag.startsWith("rating") }
+            .take(4)
+            .joinToString(" ")
+    }
+
+    fun fallbackRule34Tags(userRequest: String): String {
+        val request = userRequest.lowercase(Locale.US)
+        val mappedTags = linkedSetOf<String>()
+        val phraseMap = listOf(
+            "school uniform" to "school_uniform",
+            "bunny girl" to "bunny_girl",
+            "cat girl" to "cat_girl",
+            "catgirl" to "cat_girl",
+            "maid" to "maid",
+            "nurse" to "nurse",
+            "teacher" to "teacher",
+            "secretary" to "secretary",
+            "uniform" to "uniform",
+            "kimono" to "kimono",
+            "swimsuit" to "swimsuit",
+            "bikini" to "bikini",
+            "stockings" to "stockings",
+            "thighhighs" to "thighhighs",
+            "glasses" to "glasses",
+            "white hair" to "white_hair",
+            "black hair" to "black_hair",
+            "blonde" to "blonde_hair",
+            "red hair" to "red_hair",
+            "blue hair" to "blue_hair",
+            "pink hair" to "pink_hair",
+            "long hair" to "long_hair",
+            "short hair" to "short_hair",
+            "large breasts" to "large_breasts",
+            "big boobs" to "large_breasts",
+            "oppai" to "large_breasts",
+            "ass" to "ass",
+            "feet" to "feet",
+            "oral" to "fellatio",
+            "blowjob" to "fellatio",
+            "genshin" to "genshin_impact",
+            "raiden" to "raiden_shogun",
+            "ayaka" to "kamisato_ayaka",
+            "marin" to "kitagawa_marin",
+            "rem" to "rem_(re:zero)"
+        )
+        phraseMap.forEach { (needle, tag) ->
+            if (request.contains(needle)) mappedTags += tag
+        }
+        request
+            .replace(Regex("[^a-z0-9_\\s-]+"), " ")
+            .split(Regex("\\s+"))
+            .map { token -> token.replace('-', '_').trim('_') }
+            .filter { token ->
+                token.length > 2 &&
+                    token !in setOf("show", "give", "want", "with", "that", "this", "girl", "anime", "image", "picture", "photo", "please")
+            }
+            .forEach { token -> mappedTags += token }
+        return mappedTags.take(4).joinToString(" ").ifBlank { "1girl" }
     }
 
     private fun openAiUserContent(userInput: String, images: List<Bitmap>): Any {
@@ -525,8 +960,28 @@ class GeminiChatService {
         }
         val responseText = stream.bufferedReader().use { it.readText() }
         if (connection.responseCode !in 200..299) {
-            error(responseText.take(300))
+            val apiMessage = apiErrorMessage(responseText).ifBlank { responseText.take(160) }
+            error("HTTP ${connection.responseCode}: $apiMessage")
         }
         return JSONObject(responseText)
+    }
+
+    private fun apiErrorMessage(responseText: String): String {
+        return runCatching {
+            JSONObject(responseText)
+                .optJSONObject("error")
+                ?.optString("message")
+                .orEmpty()
+        }.getOrDefault("")
+    }
+
+    private fun parseJsonObject(raw: String): JSONObject {
+        return runCatching { JSONObject(raw.ifBlank { "{}" }) }.getOrElse { JSONObject() }
+    }
+
+    private inline fun JSONArray.forEachObject(block: (JSONObject) -> Unit) {
+        for (index in 0 until length()) {
+            optJSONObject(index)?.let(block)
+        }
     }
 }

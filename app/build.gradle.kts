@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.kapt")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
@@ -12,8 +13,8 @@ android {
         applicationId = "com.yozora.aichat"
         minSdk = 26
         targetSdk = 35
-        versionCode = 104
-        versionName = "1.0.4"
+        versionCode = 203
+        versionName = "2.0.3"
 
         vectorDrawables {
             useSupportLibrary = true
@@ -25,13 +26,13 @@ android {
         create("zora") {
             dimension = "brand"
             resValue("string", "app_name", "Zora.AI")
-            resValue("string", "app_version_panel", "Zora.AI v1.0.4")
+            resValue("string", "app_version_panel", "Zora.AI v2.0.3")
         }
         create("slv") {
             dimension = "brand"
             applicationIdSuffix = ".slv"
             resValue("string", "app_name", "SanLoVerse (SLV)")
-            resValue("string", "app_version_panel", "SanLoVerse (SLV) v1.0.4")
+            resValue("string", "app_version_panel", "SanLoVerse (SLV) v2.0.3")
         }
     }
 
@@ -70,6 +71,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.room:room-ktx:2.6.1")
     implementation("androidx.room:room-runtime:2.6.1")
+    kapt("androidx.room:room-compiler:2.6.1")
     implementation("com.google.ai.client.generativeai:generativeai:0.9.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
 

@@ -15,6 +15,7 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -23,6 +24,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -67,6 +69,8 @@ import androidx.compose.material.icons.rounded.DoneAll
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.ImageSearch
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Menu
@@ -115,6 +119,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -133,6 +138,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.rememberAsyncImagePainter
 import com.yozora.aichat.R
+import com.yozora.aichat.ui.chat.AnimeImagePreset
 import com.yozora.aichat.ui.chat.AppIconChoice
 import com.yozora.aichat.ui.chat.AppNameChoice
 import com.yozora.aichat.ui.chat.ApiVendor
@@ -140,6 +146,8 @@ import com.yozora.aichat.ui.chat.ChatBackground
 import com.yozora.aichat.ui.chat.ChatMessage
 import com.yozora.aichat.ui.chat.ChatSession
 import com.yozora.aichat.ui.chat.ChatViewModel
+import com.yozora.aichat.ui.chat.GroupMember
+import com.yozora.aichat.ui.chat.InstructionMode
 import com.yozora.aichat.ui.chat.PersonaUiState
 import com.yozora.aichat.ui.chat.QuotaUsageState
 import com.yozora.aichat.ui.chat.SafetyLevel
@@ -160,10 +168,12 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.abs
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 
-private const val APP_VERSION_NAME = "1.0.4"
+private const val APP_VERSION_NAME = "2.0.3"
 
 @Composable
 fun CompanionChatApp(
@@ -171,8 +181,26 @@ fun CompanionChatApp(
 ) {
     var viewedImageUri by remember { mutableStateOf<android.net.Uri?>(null) }
     var actionMessage by remember { mutableStateOf<ChatMessage?>(null) }
+    var exportTargetSessionId by remember { mutableStateOf<String?>(null) }
+    var aboutDialogVisible by remember { mutableStateOf(false) }
     val appVersionLabel = "${viewModel.appNameChoice.label} v$APP_VERSION_NAME"
     val clipboardManager = LocalClipboardManager.current
+    val exportLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        val targetId = exportTargetSessionId
+        exportTargetSessionId = null
+        if (uri != null && targetId != null) {
+            viewModel.exportSessionToUri(targetId, uri)
+        }
+    }
+    val importLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.importSessionFromUri(uri)
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -181,6 +209,7 @@ fun CompanionChatApp(
     ) {
         ChatScreen(
             persona = viewModel.persona,
+            groupMembers = viewModel.groupMembers,
             background = viewModel.background,
             messages = viewModel.messages,
             draft = viewModel.draft,
@@ -190,12 +219,15 @@ fun CompanionChatApp(
             attachedImageUris = viewModel.attachedImageUris,
             webSearchEnabled = viewModel.webSearchEnabled,
             canUseWebSearch = viewModel.canUseWebSearch,
+            animeImageModeEnabled = viewModel.animeImageModeEnabled,
+            animeImagePreset = viewModel.animeImagePreset,
             onDraftChange = viewModel::updateDraft,
             onSend = viewModel::sendDraft,
             onAttachImages = viewModel::attachImages,
             onRemoveAttachedImage = viewModel::removeAttachedImage,
             onWebSearchChange = viewModel::updateWebSearchEnabled,
-            onRequestAnimeImage = viewModel::requestAnimeImage,
+            onAnimeImageModeChange = viewModel::updateAnimeImageModeEnabled,
+            onAnimeImagePresetChange = viewModel::updateAnimeImagePreset,
             onOpenImage = { viewedImageUri = it },
             onMessageLongPress = { actionMessage = it },
             onOpenSessions = viewModel::openSessionDrawer,
@@ -233,7 +265,13 @@ fun CompanionChatApp(
             onNewSession = viewModel::createSession,
             onSelectSession = viewModel::selectSession,
             onDeleteSession = viewModel::deleteSession,
+            onExportSession = { session ->
+                exportTargetSessionId = session.id
+                exportLauncher.launch(viewModel.sessionExportFileName(session.id))
+            },
+            onImportSession = { importLauncher.launch(arrayOf("application/json", "text/*")) },
             onOpenSettings = viewModel::openAppSettings,
+            onOpenAbout = { aboutDialogVisible = true },
             onClose = viewModel::closeSessionDrawer
         )
         }
@@ -263,16 +301,28 @@ fun CompanionChatApp(
         ) {
             PersonaSettingsSheet(
                 persona = viewModel.persona,
+                groupMembers = viewModel.groupMembers,
+                activeMemberId = viewModel.activeMemberId,
+                responseRounds = viewModel.responseRounds,
                 background = viewModel.background,
                 moreOptions = viewModel.morePersonaOptions,
                 activeApiKeyLabel = viewModel.activeApiKeyLabel,
                 tavilyApiKeyLabel = viewModel.tavilyApiKeyLabel,
-                waifuApiTokenLabel = viewModel.waifuApiTokenLabel,
+                rule34UserIdLabel = viewModel.rule34UserIdLabel,
+                rule34ApiKeyLabel = viewModel.rule34ApiKeyLabel,
                 quotaUsage = viewModel.quotaUsage,
                 dailyRequestLimit = viewModel.dailyRequestLimit,
                 onBack = viewModel::closePersonaSheet,
                 onVendorChange = viewModel::updateVendor,
+                onSelectMember = viewModel::selectGroupMember,
+                onAddMember = viewModel::addGroupMember,
+                onRemoveMember = viewModel::removeGroupMember,
+                onResponseRoundsChange = viewModel::updateResponseRounds,
                 onNameChange = viewModel::updatePersonaName,
+                onInstructionModeChange = viewModel::updateInstructionMode,
+                onBeginnerRoleChange = viewModel::updateBeginnerRole,
+                onBeginnerStyleChange = viewModel::updateBeginnerStyle,
+                onBeginnerLimitsChange = viewModel::updateBeginnerLimits,
                 onPromptChange = viewModel::updatePersonaPrompt,
                 onModelChange = viewModel::updatePersonaModel,
                 onSafetyLevelChange = viewModel::updateSafetyLevel,
@@ -286,8 +336,10 @@ fun CompanionChatApp(
                 onClearApiKey = viewModel::clearApiKey,
                 onEditTavilyKey = viewModel::openTavilyApiKeyDialog,
                 onClearTavilyKey = viewModel::clearTavilyApiKey,
-                onEditWaifuToken = viewModel::openWaifuTokenDialog,
-                onClearWaifuToken = viewModel::clearWaifuApiToken,
+                onEditRule34UserId = viewModel::openRule34UserIdDialog,
+                onClearRule34UserId = viewModel::clearRule34UserId,
+                onEditRule34ApiKey = viewModel::openRule34ApiKeyDialog,
+                onClearRule34ApiKey = viewModel::clearRule34ApiKey,
                 onDeleteSession = viewModel::deleteActiveSession,
                 onSave = viewModel::savePersona
             )
@@ -326,7 +378,10 @@ fun CompanionChatApp(
             message = message,
             onDismiss = { actionMessage = null },
             onCopy = {
-                clipboardManager.setText(AnnotatedString(message.content))
+                val copyText = message.content.ifBlank {
+                    message.remoteImageUrl ?: message.imageUris.joinToString("\n") { it.toString() }
+                }
+                clipboardManager.setText(AnnotatedString(copyText))
                 actionMessage = null
             },
             onEdit = {
@@ -340,8 +395,24 @@ fun CompanionChatApp(
         )
     }
 
+    if (aboutDialogVisible) {
+        AboutAppDialog(
+            appVersionLabel = appVersionLabel,
+            onDismiss = { aboutDialogVisible = false }
+        )
+    }
+
+    if (viewModel.rateLimitDialogVisible) {
+        RateLimitRetryDialog(
+            onDismiss = viewModel::dismissRateLimitDialog,
+            onRetry = viewModel::retryAfterRateLimit
+        )
+    }
+
     when {
         viewModel.appSettingsVisible -> BackHandler(onBack = viewModel::closeAppSettings)
+        aboutDialogVisible -> BackHandler { aboutDialogVisible = false }
+        viewModel.rateLimitDialogVisible -> BackHandler(onBack = viewModel::dismissRateLimitDialog)
         actionMessage != null -> BackHandler { actionMessage = null }
         viewModel.personaSheetVisible -> BackHandler(onBack = viewModel::closePersonaSheet)
         viewModel.sessionDrawerVisible -> BackHandler(onBack = viewModel::closeSessionDrawer)
@@ -351,6 +422,7 @@ fun CompanionChatApp(
 @Composable
 private fun ChatScreen(
     persona: PersonaUiState,
+    groupMembers: List<GroupMember>,
     background: ChatBackground,
     messages: List<ChatMessage>,
     draft: String,
@@ -360,19 +432,21 @@ private fun ChatScreen(
     attachedImageUris: List<android.net.Uri>,
     webSearchEnabled: Boolean,
     canUseWebSearch: Boolean,
+    animeImageModeEnabled: Boolean,
+    animeImagePreset: AnimeImagePreset,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
     onAttachImages: (List<android.net.Uri>) -> Unit,
     onRemoveAttachedImage: (android.net.Uri) -> Unit,
     onWebSearchChange: (Boolean) -> Unit,
-    onRequestAnimeImage: (String) -> Unit,
+    onAnimeImageModeChange: (Boolean) -> Unit,
+    onAnimeImagePresetChange: (AnimeImagePreset) -> Unit,
     onOpenImage: (android.net.Uri) -> Unit,
     onMessageLongPress: (ChatMessage) -> Unit,
     onOpenSessions: () -> Unit,
     onOpenPersona: () -> Unit
 ) {
     var toolsSheetVisible by remember { mutableStateOf(false) }
-    var animeImageDialogVisible by remember { mutableStateOf(false) }
     var cameraOutputUri by remember { mutableStateOf<android.net.Uri?>(null) }
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -395,23 +469,57 @@ private fun ChatScreen(
             cameraOutputUri = null
         }
     )
-    val scrollTarget = messages.size + if (isSending) 1 else 0
-    val isNearLatest by remember {
-        derivedStateOf {
-            val totalItems = listState.layoutInfo.totalItemsCount
-            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            totalItems == 0 || lastVisible >= totalItems - 3
-        }
-    }
+    val hasChatContent = messages.isNotEmpty() || isSending
     val showJumpToLatest by remember {
         derivedStateOf {
-            scrollTarget > 0 && (listState.canScrollForward || !isNearLatest)
+            hasChatContent &&
+                (listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 24)
         }
     }
+    fun displayIndexForMessage(originalIndex: Int): Int {
+        val typingOffset = if (isSending) 1 else 0
+        return typingOffset + (messages.lastIndex - originalIndex).coerceAtLeast(0)
+    }
+    val topAnchorIndex = if (messages.isNotEmpty()) displayIndexForMessage(0) else 0
+    val bottomAnchorIndex = 0
+    suspend fun scrollDisplayIndexToTop(index: Int) {
+        val totalItems = listState.layoutInfo.totalItemsCount
+        if (totalItems <= 0) return
+        val safeIndex = index.coerceIn(0, totalItems - 1)
+        if (abs(listState.firstVisibleItemIndex - safeIndex) > 12) {
+            listState.scrollToItem(safeIndex)
+        } else {
+            listState.animateScrollToItem(safeIndex)
+        }
+        yield()
+        var itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == safeIndex }
+        if (itemInfo == null) {
+            listState.scrollToItem(safeIndex)
+            yield()
+            itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == safeIndex }
+        }
+        itemInfo ?: return
+        val deltaToTop = itemInfo.offset - listState.layoutInfo.viewportStartOffset
+        if (abs(deltaToTop) > 1) {
+            listState.scrollBy(deltaToTop.toFloat())
+        }
+    }
+    suspend fun scrollToNewest() {
+        if (!hasChatContent) return
+        if (listState.firstVisibleItemIndex > 10) {
+            listState.scrollToItem(bottomAnchorIndex)
+        } else {
+            listState.animateScrollToItem(bottomAnchorIndex)
+        }
+    }
+    suspend fun scrollToOldest() {
+        if (!hasChatContent) return
+        scrollDisplayIndexToTop(topAnchorIndex)
+    }
 
-    LaunchedEffect(scrollTarget, messages.lastOrNull()?.id) {
-        if (scrollTarget > 0 && isNearLatest) {
-            listState.animateScrollToItem(scrollTarget - 1)
+    LaunchedEffect(messages.lastOrNull()?.id, isSending) {
+        if (hasChatContent) {
+            scrollToNewest()
         }
     }
 
@@ -428,12 +536,14 @@ private fun ChatScreen(
         ) {
             ChatHeader(
                 persona = persona,
+                groupMembers = groupMembers,
                 isOnline = isOnline,
                 onOpenSessions = onOpenSessions,
                 onOpenPersona = onOpenPersona
             )
             LazyColumn(
                 state = listState,
+                reverseLayout = messages.isNotEmpty(),
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
@@ -448,18 +558,19 @@ private fun ChatScreen(
                         )
                     }
                 } else {
-                    items(messages, key = { it.id }) { message ->
+                    if (isSending) {
+                        item(key = "typing") {
+                            TypingBubble(persona = persona)
+                        }
+                    }
+                    items(messages.asReversed(), key = { it.id }) { message ->
                         AnimatedMessageBubble(
                             message = message,
                             persona = persona,
+                            groupMembers = groupMembers,
                             onOpenImage = onOpenImage,
                             onMessageLongPress = onMessageLongPress
                         )
-                    }
-                }
-                if (isSending) {
-                    item(key = "typing") {
-                        TypingBubble(persona = persona)
                     }
                 }
             }
@@ -506,8 +617,8 @@ private fun ChatScreen(
                     .size(46.dp)
                     .clickable {
                         coroutineScope.launch {
-                            if (scrollTarget > 0) {
-                                listState.animateScrollToItem(scrollTarget - 1)
+                            if (hasChatContent) {
+                                scrollToNewest()
                             }
                         }
                     }
@@ -522,9 +633,33 @@ private fun ChatScreen(
         }
     }
 
-    if (toolsSheetVisible) {
+    AnimatedVisibility(
+        visible = toolsSheetVisible,
+        enter = fadeIn(animationSpec = tween(150)) + slideInVertically(
+            animationSpec = tween(220),
+            initialOffsetY = { it / 4 }
+        ),
+        exit = fadeOut(animationSpec = tween(120)) + slideOutVertically(
+            animationSpec = tween(180),
+            targetOffsetY = { it / 4 }
+        )
+    ) {
         ChatToolsSheet(
             onDismiss = { toolsSheetVisible = false },
+            onScrollTop = {
+                toolsSheetVisible = false
+                coroutineScope.launch {
+                    delay(190)
+                    scrollToOldest()
+                }
+            },
+            onScrollBottom = {
+                toolsSheetVisible = false
+                coroutineScope.launch {
+                    delay(190)
+                    scrollToNewest()
+                }
+            },
             onCamera = {
                 val uri = createCameraImageUri(context)
                 cameraOutputUri = uri
@@ -539,29 +674,26 @@ private fun ChatScreen(
                 toolsSheetVisible = false
                 filePicker.launch(arrayOf("image/*"))
             },
-            onAnimeImage = {
+            messages = messages,
+            onJumpToMessage = { index ->
                 toolsSheetVisible = false
-                animeImageDialogVisible = true
+                coroutineScope.launch {
+                    delay(190)
+                    listState.animateScrollToItem(displayIndexForMessage(index))
+                }
             },
             webSearchEnabled = webSearchEnabled,
             webSearchAvailable = canUseWebSearch,
-            onWebSearchChange = onWebSearchChange
+            onWebSearchChange = onWebSearchChange,
+            animeImageModeEnabled = animeImageModeEnabled,
+            animeImagePreset = animeImagePreset,
+            onAnimeImageModeChange = onAnimeImageModeChange,
+            onAnimeImagePresetChange = onAnimeImagePresetChange
         )
     }
 
-    if (animeImageDialogVisible) {
-        AnimeImageRequestDialog(
-            onDismiss = { animeImageDialogVisible = false },
-            onSubmit = { request ->
-                animeImageDialogVisible = false
-                onRequestAnimeImage(request)
-            }
-        )
-    }
-
-    when {
-        animeImageDialogVisible -> BackHandler { animeImageDialogVisible = false }
-        toolsSheetVisible -> BackHandler { toolsSheetVisible = false }
+    if (toolsSheetVisible) {
+        BackHandler { toolsSheetVisible = false }
     }
 }
 
@@ -638,6 +770,7 @@ private fun BackgroundImage(
 @Composable
 private fun ChatHeader(
     persona: PersonaUiState,
+    groupMembers: List<GroupMember>,
     isOnline: Boolean,
     onOpenSessions: () -> Unit,
     onOpenPersona: () -> Unit
@@ -664,7 +797,7 @@ private fun ChatHeader(
         Spacer(modifier = Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = persona.displayName,
+                text = groupMembers.joinToString(" + ") { it.persona.displayName.ifBlank { "AI" } },
                 style = MaterialTheme.typography.titleMedium,
                 color = AppTextPrimary,
                 maxLines = 1,
@@ -708,10 +841,22 @@ private fun SessionDrawer(
     onNewSession: () -> Unit,
     onSelectSession: (String) -> Unit,
     onDeleteSession: (String) -> Unit,
+    onExportSession: (ChatSession) -> Unit,
+    onImportSession: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenAbout: () -> Unit,
     onClose: () -> Unit
 ) {
     var deleteTarget by remember { mutableStateOf<ChatSession?>(null) }
+    var sessionSearch by remember { mutableStateOf("") }
+    val filteredSessions = remember(sessions, sessionSearch) {
+        val query = sessionSearch.trim()
+        if (query.isBlank()) {
+            sessions
+        } else {
+            sessions.filter { session -> session.matchesSessionQuery(query) }
+        }
+    }
 
     Surface(
         modifier = Modifier
@@ -737,7 +882,7 @@ private fun SessionDrawer(
                 Spacer(modifier = Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Sessions",
+                        text = "Chats",
                         color = AppTextPrimary,
                         style = MaterialTheme.typography.titleMedium
                     )
@@ -753,6 +898,13 @@ private fun SessionDrawer(
                     Icon(
                         imageVector = Icons.Rounded.Settings,
                         contentDescription = "App settings",
+                        tint = AppTextPrimary
+                    )
+                }
+                IconButton(onClick = onOpenAbout) {
+                    Icon(
+                        imageVector = Icons.Rounded.Info,
+                        contentDescription = "About app",
                         tint = AppTextPrimary
                     )
                 }
@@ -782,11 +934,70 @@ private fun SessionDrawer(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "New session",
+                    text = "New chat",
                     color = Color.White,
                     style = MaterialTheme.typography.labelLarge
                 )
             }
+
+            Surface(
+                color = AppSurface,
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, AppStroke),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .padding(top = 10.dp)
+                    .clickable(onClick = onImportSession)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.InsertDriveFile,
+                        contentDescription = null,
+                        tint = AppAccentSoft,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Import session",
+                        color = AppAccentSoft,
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+            }
+
+            OutlinedTextField(
+                value = sessionSearch,
+                onValueChange = { sessionSearch = it },
+                singleLine = true,
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Rounded.Search,
+                        contentDescription = null,
+                        tint = AppTextSecondary
+                    )
+                },
+                placeholder = {
+                    Text(text = "Search sessions", color = AppTextSecondary)
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 14.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = AppTextPrimary,
+                    unfocusedTextColor = AppTextPrimary,
+                    focusedBorderColor = AppAccent,
+                    unfocusedBorderColor = AppStroke,
+                    cursorColor = AppAccent,
+                    focusedContainerColor = AppSurface2,
+                    unfocusedContainerColor = AppSurface2
+                ),
+                shape = RoundedCornerShape(16.dp)
+            )
 
             LazyColumn(
                 modifier = Modifier
@@ -795,11 +1006,12 @@ private fun SessionDrawer(
                     .padding(top = 18.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                items(sessions, key = { it.id }) { session ->
+                items(filteredSessions, key = { it.id }) { session ->
                     SessionRow(
                         session = session,
                         selected = session.id == activeSessionId,
                         onClick = { onSelectSession(session.id) },
+                        onExport = { onExportSession(session) },
                         onDelete = { deleteTarget = session }
                     )
                 }
@@ -822,14 +1034,14 @@ private fun SessionDrawer(
             containerColor = AppSurface,
             title = {
                 Text(
-                    text = "Delete session?",
+                    text = "Delete chat?",
                     color = AppTextPrimary,
                     style = MaterialTheme.typography.titleMedium
                 )
             },
             text = {
                 Text(
-                    text = session.persona.displayName.ifBlank { "This session" },
+                    text = session.groupTitle().ifBlank { "This chat" },
                     color = AppTextSecondary,
                     style = MaterialTheme.typography.bodyMedium
                 )
@@ -858,6 +1070,7 @@ private fun SessionRow(
     session: ChatSession,
     selected: Boolean,
     onClick: () -> Unit,
+    onExport: () -> Unit,
     onDelete: () -> Unit
 ) {
     Surface(
@@ -889,7 +1102,7 @@ private fun SessionRow(
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = session.persona.displayName.ifBlank { "Unnamed persona" },
+                    text = session.groupTitle().ifBlank { "Unnamed chat" },
                     color = AppTextPrimary,
                     style = MaterialTheme.typography.labelLarge,
                     maxLines = 1,
@@ -908,6 +1121,14 @@ private fun SessionRow(
                 color = AppTextSecondary,
                 style = MaterialTheme.typography.bodyMedium
             )
+            IconButton(onClick = onExport) {
+                Icon(
+                    imageVector = Icons.Rounded.Upload,
+                    contentDescription = "Export session",
+                    tint = AppAccentSoft,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
             IconButton(onClick = onDelete) {
                 Icon(
                     imageVector = Icons.Rounded.DeleteOutline,
@@ -1071,6 +1292,7 @@ private fun TypingDot(alpha: Float) {
 private fun AnimatedMessageBubble(
     message: ChatMessage,
     persona: PersonaUiState,
+    groupMembers: List<GroupMember>,
     onOpenImage: (android.net.Uri) -> Unit,
     onMessageLongPress: (ChatMessage) -> Unit
 ) {
@@ -1089,6 +1311,7 @@ private fun AnimatedMessageBubble(
         MessageBubble(
             message = message,
             persona = persona,
+            groupMembers = groupMembers,
             onOpenImage = onOpenImage,
             onMessageLongPress = onMessageLongPress
         )
@@ -1100,17 +1323,23 @@ private fun AnimatedMessageBubble(
 private fun MessageBubble(
     message: ChatMessage,
     persona: PersonaUiState,
+    groupMembers: List<GroupMember>,
     onOpenImage: (android.net.Uri) -> Unit,
     onMessageLongPress: (ChatMessage) -> Unit
 ) {
     val isUser = message.role == "user"
+    val speakerPersona = if (isUser) {
+        persona
+    } else {
+        groupMembers.firstOrNull { it.id == message.speakerId }?.persona ?: persona
+    }
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.Bottom
     ) {
         if (!isUser) {
-            Avatar(persona = persona, size = 40)
+            Avatar(persona = speakerPersona, size = 40)
             Spacer(modifier = Modifier.width(10.dp))
         }
 
@@ -1132,6 +1361,14 @@ private fun MessageBubble(
                 )
         ) {
             Column(modifier = Modifier.padding(18.dp)) {
+                if (!isUser && groupMembers.size > 1) {
+                    Text(
+                        text = message.speakerName ?: speakerPersona.displayName,
+                        color = AppAccentSoft,
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                }
                 if (message.isImageLoading) {
                     AnimeImageLoadingCard()
                 }
@@ -1301,7 +1538,7 @@ private fun MessageActionSheet(
                 )
                 ActionSheetRow(
                     icon = Icons.Rounded.ContentCopy,
-                    label = "Copy",
+                    label = if (message.content.isBlank() && message.remoteImageUrl != null) "Copy image link" else "Copy",
                     onClick = onCopy
                 )
                 if (isUser) {
@@ -1313,7 +1550,7 @@ private fun MessageActionSheet(
                 }
                 ActionSheetRow(
                     icon = Icons.Rounded.Refresh,
-                    label = "Retry",
+                    label = if (isUser) "Retry from here" else "Retry response",
                     onClick = onRetry
                 )
             }
@@ -1357,14 +1594,40 @@ private fun ActionSheetRow(
 @Composable
 private fun ChatToolsSheet(
     onDismiss: () -> Unit,
+    onScrollTop: () -> Unit,
+    onScrollBottom: () -> Unit,
     onCamera: () -> Unit,
     onPhotos: () -> Unit,
     onFiles: () -> Unit,
-    onAnimeImage: () -> Unit,
+    messages: List<ChatMessage>,
+    onJumpToMessage: (Int) -> Unit,
     webSearchEnabled: Boolean,
     webSearchAvailable: Boolean,
-    onWebSearchChange: (Boolean) -> Unit
+    onWebSearchChange: (Boolean) -> Unit,
+    animeImageModeEnabled: Boolean,
+    animeImagePreset: AnimeImagePreset,
+    onAnimeImageModeChange: (Boolean) -> Unit,
+    onAnimeImagePresetChange: (AnimeImagePreset) -> Unit
 ) {
+    var keywordSearch by remember { mutableStateOf("") }
+    val keywordResults = remember(messages, keywordSearch) {
+        val query = keywordSearch.trim()
+        if (query.isBlank()) {
+            emptyList()
+        } else {
+            messages.mapIndexedNotNull { index, message ->
+                if (
+                    message.content.contains(query, ignoreCase = true) ||
+                    message.speakerName.orEmpty().contains(query, ignoreCase = true)
+                ) {
+                    index to message
+                } else {
+                    null
+                }
+            }.take(8)
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1392,6 +1655,7 @@ private fun ChatToolsSheet(
             Column(
                 modifier = Modifier
                     .navigationBarsPadding()
+                    .verticalScroll(rememberScrollState())
                     .padding(horizontal = 20.dp, vertical = 18.dp)
             ) {
                 Row(
@@ -1443,11 +1707,74 @@ private fun ChatToolsSheet(
                     )
                 }
 
-                ActionSheetRow(
-                    icon = Icons.Rounded.Search,
-                    label = "Anime image",
-                    onClick = onAnimeImage
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 14.dp)
+                ) {
+                    ToolActionButton(
+                        icon = Icons.Rounded.KeyboardArrowDown,
+                        label = "Top",
+                        iconRotation = 180f,
+                        onClick = onScrollTop,
+                        modifier = Modifier.weight(1f)
+                    )
+                    ToolActionButton(
+                        icon = Icons.Rounded.KeyboardArrowDown,
+                        label = "Bottom",
+                        onClick = onScrollBottom,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                OutlinedTextField(
+                    value = keywordSearch,
+                    onValueChange = { keywordSearch = it },
+                    singleLine = true,
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Rounded.Search,
+                            contentDescription = null,
+                            tint = AppTextSecondary
+                        )
+                    },
+                    placeholder = {
+                        Text(text = "Search this chat", color = AppTextSecondary)
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 14.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = AppTextPrimary,
+                        unfocusedTextColor = AppTextPrimary,
+                        focusedBorderColor = AppAccent,
+                        unfocusedBorderColor = AppStroke,
+                        cursorColor = AppAccent,
+                        focusedContainerColor = AppSurface2,
+                        unfocusedContainerColor = AppSurface2
+                    ),
+                    shape = RoundedCornerShape(16.dp)
                 )
+                AnimatedVisibility(visible = keywordSearch.isNotBlank()) {
+                    Column(modifier = Modifier.padding(top = 8.dp)) {
+                        if (keywordResults.isEmpty()) {
+                            Text(
+                                text = "No matches",
+                                color = AppTextSecondary,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp)
+                            )
+                        } else {
+                            keywordResults.forEach { (index, message) ->
+                                SearchResultRow(
+                                    message = message,
+                                    onClick = { onJumpToMessage(index) }
+                                )
+                            }
+                        }
+                    }
+                }
 
                 Box(
                     modifier = Modifier
@@ -1483,11 +1810,49 @@ private fun ChatToolsSheet(
                 }
                 if (!webSearchAvailable) {
                     Text(
-                        text = "Add a Tavily key and use Google as the API vendor.",
+                        text = "Add a Tavily key to enable web search.",
                         color = AppTextSecondary,
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.padding(start = 44.dp, bottom = 4.dp)
                     )
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 14.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.ImageSearch,
+                        contentDescription = null,
+                        tint = AppTextPrimary,
+                        modifier = Modifier.size(30.dp)
+                    )
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Text(
+                        text = "Anime image",
+                        color = AppTextPrimary,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Switch(
+                        checked = animeImageModeEnabled,
+                        onCheckedChange = onAnimeImageModeChange
+                    )
+                }
+                AnimatedVisibility(visible = animeImageModeEnabled) {
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(start = 44.dp, top = 6.dp)
+                    ) {
+                        items(AnimeImagePreset.entries) { preset ->
+                            PresetChoiceChip(
+                                label = preset.label,
+                                selected = animeImagePreset == preset,
+                                onClick = { onAnimeImagePresetChange(preset) }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -1495,65 +1860,100 @@ private fun ChatToolsSheet(
 }
 
 @Composable
-private fun AnimeImageRequestDialog(
-    onDismiss: () -> Unit,
-    onSubmit: (String) -> Unit
+private fun ToolActionButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    iconRotation: Float = 0f,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    var request by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = AppSurface,
-        title = {
-            Text(
-                text = "Describe the image",
-                color = AppTextPrimary,
-                style = MaterialTheme.typography.titleMedium
+    Surface(
+        color = AppSurface2,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, AppStroke),
+        modifier = modifier
+            .height(46.dp)
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = AppAccentSoft,
+                modifier = Modifier
+                    .size(20.dp)
+                    .graphicsLayer { rotationZ = iconRotation }
             )
-        },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = request,
-                    onValueChange = { request = it },
-                    singleLine = false,
-                    minLines = 2,
-                    maxLines = 4,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(
-                        onDone = {
-                            if (request.isNotBlank()) {
-                                onSubmit(request)
-                            }
-                        }
-                    ),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = AppTextPrimary,
-                        unfocusedTextColor = AppTextPrimary,
-                        focusedBorderColor = AppAccent.copy(alpha = 0.7f),
-                        unfocusedBorderColor = AppStroke,
-                        cursorColor = AppAccent,
-                        focusedContainerColor = AppSurface2,
-                        unfocusedContainerColor = AppSurface2
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = { onSubmit(request) },
-                enabled = request.isNotBlank()
-            ) {
-                Text(text = "Fetch", color = AppAccentSoft)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text(text = "Cancel", color = AppTextSecondary)
-            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = label,
+                color = AppTextPrimary,
+                style = MaterialTheme.typography.labelLarge
+            )
         }
-    )
+    }
+}
+
+@Composable
+private fun SearchResultRow(
+    message: ChatMessage,
+    onClick: () -> Unit
+) {
+    val label = if (message.role == "user") {
+        "You"
+    } else {
+        message.speakerName ?: "AI"
+    }
+    val snippet = message.content.ifBlank {
+        message.remoteImageUrl ?: if (message.imageUris.isNotEmpty()) "[image]" else "(empty)"
+    }
+    Surface(
+        color = Color.Transparent,
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)) {
+            Text(
+                text = label,
+                color = AppAccentSoft,
+                style = MaterialTheme.typography.labelLarge
+            )
+            Text(
+                text = snippet,
+                color = AppTextSecondary,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun PresetChoiceChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = if (selected) AppAccentDim else AppSurface2,
+        border = BorderStroke(1.dp, if (selected) AppAccent else AppStroke),
+        modifier = Modifier.clickable(onClick = onClick)
+    ) {
+        Text(
+            text = label,
+            color = if (selected) AppAccentSoft else AppTextPrimary,
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+        )
+    }
 }
 
 @Composable
@@ -1637,14 +2037,18 @@ private fun ChatInputBar(
             Row(
                 modifier = Modifier
                     .heightIn(min = 68.dp, max = 176.dp)
-                    .padding(start = 8.dp, top = 8.dp, end = 10.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.Bottom
+                    .padding(start = 10.dp, top = 8.dp, end = 10.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onOpenTools) {
+                IconButton(
+                    onClick = onOpenTools,
+                    modifier = Modifier.size(52.dp)
+                ) {
                     Icon(
-                        imageVector = Icons.Rounded.Menu,
+                        imageVector = Icons.Rounded.AttachFile,
                         contentDescription = "Open chat tools",
-                        tint = AppTextPrimary
+                        tint = AppTextPrimary,
+                        modifier = Modifier.size(27.dp)
                     )
                 }
                 OutlinedTextField(
@@ -1803,16 +2207,28 @@ private fun AnnotatedString.Builder.appendDelimited(
 @Composable
 private fun PersonaSettingsSheet(
     persona: PersonaUiState,
+    groupMembers: List<GroupMember>,
+    activeMemberId: String,
+    responseRounds: Int,
     background: ChatBackground,
     moreOptions: Boolean,
     activeApiKeyLabel: String?,
     tavilyApiKeyLabel: String?,
-    waifuApiTokenLabel: String?,
+    rule34UserIdLabel: String?,
+    rule34ApiKeyLabel: String?,
     quotaUsage: QuotaUsageState,
     dailyRequestLimit: Int?,
     onBack: () -> Unit,
     onVendorChange: (ApiVendor) -> Unit,
+    onSelectMember: (String) -> Unit,
+    onAddMember: () -> Unit,
+    onRemoveMember: (String) -> Unit,
+    onResponseRoundsChange: (Int) -> Unit,
     onNameChange: (String) -> Unit,
+    onInstructionModeChange: (InstructionMode) -> Unit,
+    onBeginnerRoleChange: (String) -> Unit,
+    onBeginnerStyleChange: (String) -> Unit,
+    onBeginnerLimitsChange: (String) -> Unit,
     onPromptChange: (String) -> Unit,
     onModelChange: (String) -> Unit,
     onSafetyLevelChange: (SafetyLevel) -> Unit,
@@ -1826,8 +2242,10 @@ private fun PersonaSettingsSheet(
     onClearApiKey: () -> Unit,
     onEditTavilyKey: () -> Unit,
     onClearTavilyKey: () -> Unit,
-    onEditWaifuToken: () -> Unit,
-    onClearWaifuToken: () -> Unit,
+    onEditRule34UserId: () -> Unit,
+    onClearRule34UserId: () -> Unit,
+    onEditRule34ApiKey: () -> Unit,
+    onClearRule34ApiKey: () -> Unit,
     onDeleteSession: () -> Unit,
     onSave: () -> Unit
 ) {
@@ -1879,6 +2297,16 @@ private fun PersonaSettingsSheet(
                 Spacer(modifier = Modifier.size(48.dp))
             }
 
+            GroupEditor(
+                members = groupMembers,
+                activeMemberId = activeMemberId,
+                responseRounds = responseRounds,
+                onSelectMember = onSelectMember,
+                onAddMember = onAddMember,
+                onRemoveMember = onRemoveMember,
+                onResponseRoundsChange = onResponseRoundsChange
+            )
+
             AvatarEditor(
                 persona = persona,
                 onUpload = { imagePicker.launch(arrayOf("image/*")) },
@@ -1894,11 +2322,15 @@ private fun PersonaSettingsSheet(
                 singleLine = true
             )
 
-            CollapsibleInstructionPrompt(
-                value = persona.instructionPrompt,
-                expanded = instructionPromptExpanded,
-                onExpandedChange = { instructionPromptExpanded = it },
-                onValueChange = onPromptChange
+            InstructionSection(
+                persona = persona,
+                advancedExpanded = instructionPromptExpanded,
+                onAdvancedExpandedChange = { instructionPromptExpanded = it },
+                onModeChange = onInstructionModeChange,
+                onBeginnerRoleChange = onBeginnerRoleChange,
+                onBeginnerStyleChange = onBeginnerStyleChange,
+                onBeginnerLimitsChange = onBeginnerLimitsChange,
+                onAdvancedPromptChange = onPromptChange
             )
 
             MoreOptions(
@@ -1907,7 +2339,8 @@ private fun PersonaSettingsSheet(
                 background = background,
                 activeApiKeyLabel = activeApiKeyLabel,
                 tavilyApiKeyLabel = tavilyApiKeyLabel,
-                waifuApiTokenLabel = waifuApiTokenLabel,
+                rule34UserIdLabel = rule34UserIdLabel,
+                rule34ApiKeyLabel = rule34ApiKeyLabel,
                 quotaUsage = quotaUsage,
                 dailyRequestLimit = dailyRequestLimit,
                 onToggle = onToggleMore,
@@ -1921,8 +2354,10 @@ private fun PersonaSettingsSheet(
                 onClearApiKey = onClearApiKey,
                 onEditTavilyKey = onEditTavilyKey,
                 onClearTavilyKey = onClearTavilyKey,
-                onEditWaifuToken = onEditWaifuToken,
-                onClearWaifuToken = onClearWaifuToken
+                onEditRule34UserId = onEditRule34UserId,
+                onClearRule34UserId = onClearRule34UserId,
+                onEditRule34ApiKey = onEditRule34ApiKey,
+                onClearRule34ApiKey = onClearRule34ApiKey
             )
 
             Button(
@@ -1951,6 +2386,145 @@ private fun PersonaSettingsSheet(
                     text = "Delete this session",
                     color = Color(0xFFFF7E8B)
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun GroupEditor(
+    members: List<GroupMember>,
+    activeMemberId: String,
+    responseRounds: Int,
+    onSelectMember: (String) -> Unit,
+    onAddMember: () -> Unit,
+    onRemoveMember: (String) -> Unit,
+    onResponseRoundsChange: (Int) -> Unit
+) {
+    Column(modifier = Modifier.padding(top = 10.dp, bottom = 18.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "AI members",
+                color = AppTextPrimary,
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = "${members.size}/4",
+                color = AppTextSecondary,
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(top = 10.dp)
+        ) {
+            items(members, key = { it.id }) { member ->
+                GroupMemberChip(
+                    member = member,
+                    selected = member.id == activeMemberId,
+                    canRemove = members.size > 1,
+                    onSelect = { onSelectMember(member.id) },
+                    onRemove = { onRemoveMember(member.id) }
+                )
+            }
+            if (members.size < 4) {
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = AppSurface2,
+                        border = BorderStroke(1.dp, AppStroke),
+                        modifier = Modifier
+                            .height(44.dp)
+                            .clickable(onClick = onAddMember)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 12.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Add,
+                                contentDescription = null,
+                                tint = AppAccentSoft,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Add AI",
+                                color = AppAccentSoft,
+                                style = MaterialTheme.typography.labelLarge
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        Text(
+            text = "AI turns $responseRounds",
+            color = AppTextPrimary,
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.padding(top = 16.dp)
+        )
+        Slider(
+            value = responseRounds.toFloat(),
+            onValueChange = { onResponseRoundsChange(it.toInt().coerceIn(1, 3)) },
+            valueRange = 1f..3f,
+            steps = 1,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Text(
+            text = "Each turn picks one AI to answer. Multi-AI chats rotate speakers before your next turn.",
+            color = AppTextSecondary,
+            style = MaterialTheme.typography.bodyMedium
+        )
+    }
+}
+
+@Composable
+private fun GroupMemberChip(
+    member: GroupMember,
+    selected: Boolean,
+    canRemove: Boolean,
+    onSelect: () -> Unit,
+    onRemove: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = if (selected) AppAccentDim else AppSurface2,
+        border = BorderStroke(1.dp, if (selected) AppAccent else AppStroke),
+        modifier = Modifier
+            .height(44.dp)
+            .clickable(onClick = onSelect)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(start = 8.dp, end = if (canRemove) 4.dp else 12.dp)
+        ) {
+            Avatar(persona = member.persona, size = 28)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = member.persona.displayName,
+                color = if (selected) AppAccentSoft else AppTextPrimary,
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (canRemove) {
+                IconButton(
+                    onClick = onRemove,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = "Remove AI",
+                        tint = Color(0xFFFFA0AA),
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
             }
         }
     }
@@ -2101,6 +2675,106 @@ private fun PersonaTextField(
 }
 
 @Composable
+private fun InstructionSection(
+    persona: PersonaUiState,
+    advancedExpanded: Boolean,
+    onAdvancedExpandedChange: (Boolean) -> Unit,
+    onModeChange: (InstructionMode) -> Unit,
+    onBeginnerRoleChange: (String) -> Unit,
+    onBeginnerStyleChange: (String) -> Unit,
+    onBeginnerLimitsChange: (String) -> Unit,
+    onAdvancedPromptChange: (String) -> Unit
+) {
+    Column(modifier = Modifier.padding(bottom = 18.dp)) {
+        Text(
+            text = "Instruction mode",
+            color = AppTextPrimary,
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            InstructionMode.entries.forEach { mode ->
+                ModeChoiceChip(
+                    label = mode.label,
+                    selected = persona.instructionMode == mode,
+                    onClick = { onModeChange(mode) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
+        AnimatedVisibility(visible = persona.instructionMode == InstructionMode.Beginner) {
+            Column(modifier = Modifier.padding(top = 14.dp)) {
+                PersonaTextField(
+                    label = "Role",
+                    value = persona.beginnerRole,
+                    onValueChange = onBeginnerRoleChange,
+                    helper = "Who this persona is, what they know, and how they relate to you.",
+                    singleLine = false,
+                    minLines = 2
+                )
+                PersonaTextField(
+                    label = "Style",
+                    value = persona.beginnerStyle,
+                    onValueChange = onBeginnerStyleChange,
+                    helper = "Tone, message length, speaking quirks, and roleplay texture.",
+                    singleLine = false,
+                    minLines = 2
+                )
+                PersonaTextField(
+                    label = "Limits",
+                    value = persona.beginnerLimits,
+                    onValueChange = onBeginnerLimitsChange,
+                    helper = "Boundaries, canon rules, things to avoid, or must-follow details.",
+                    singleLine = false,
+                    minLines = 2
+                )
+            }
+        }
+
+        AnimatedVisibility(visible = persona.instructionMode == InstructionMode.Advanced) {
+            Column(modifier = Modifier.padding(top = 14.dp)) {
+                CollapsibleInstructionPrompt(
+                    value = persona.instructionPrompt,
+                    expanded = advancedExpanded,
+                    onExpandedChange = onAdvancedExpandedChange,
+                    onValueChange = onAdvancedPromptChange
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModeChoiceChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = if (selected) AppAccentDim else AppSurface,
+        border = BorderStroke(1.dp, if (selected) AppAccent else AppStroke),
+        modifier = modifier
+            .height(46.dp)
+            .clickable(onClick = onClick)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                text = label,
+                color = if (selected) AppAccentSoft else AppTextPrimary,
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+@Composable
 private fun CollapsibleInstructionPrompt(
     value: String,
     expanded: Boolean,
@@ -2218,7 +2892,8 @@ private fun MoreOptions(
     background: ChatBackground,
     activeApiKeyLabel: String?,
     tavilyApiKeyLabel: String?,
-    waifuApiTokenLabel: String?,
+    rule34UserIdLabel: String?,
+    rule34ApiKeyLabel: String?,
     quotaUsage: QuotaUsageState,
     dailyRequestLimit: Int?,
     onToggle: () -> Unit,
@@ -2232,8 +2907,10 @@ private fun MoreOptions(
     onClearApiKey: () -> Unit,
     onEditTavilyKey: () -> Unit,
     onClearTavilyKey: () -> Unit,
-    onEditWaifuToken: () -> Unit,
-    onClearWaifuToken: () -> Unit
+    onEditRule34UserId: () -> Unit,
+    onClearRule34UserId: () -> Unit,
+    onEditRule34ApiKey: () -> Unit,
+    onClearRule34ApiKey: () -> Unit
 ) {
     Surface(
         color = AppSurface,
@@ -2300,15 +2977,18 @@ private fun MoreOptions(
                     ApiKeySummary(
                         activeApiKeyLabel = activeApiKeyLabel,
                         tavilyApiKeyLabel = tavilyApiKeyLabel,
-                        waifuApiTokenLabel = waifuApiTokenLabel,
+                        rule34UserIdLabel = rule34UserIdLabel,
+                        rule34ApiKeyLabel = rule34ApiKeyLabel,
                         quotaUsage = quotaUsage,
                         dailyRequestLimit = dailyRequestLimit,
                         onEditApiKey = onEditApiKey,
                         onClearApiKey = onClearApiKey,
                         onEditTavilyKey = onEditTavilyKey,
                         onClearTavilyKey = onClearTavilyKey,
-                        onEditWaifuToken = onEditWaifuToken,
-                        onClearWaifuToken = onClearWaifuToken
+                        onEditRule34UserId = onEditRule34UserId,
+                        onClearRule34UserId = onClearRule34UserId,
+                        onEditRule34ApiKey = onEditRule34ApiKey,
+                        onClearRule34ApiKey = onClearRule34ApiKey
                     )
                 }
             }
@@ -2414,19 +3094,37 @@ private fun ChatBackground.sameChoice(other: ChatBackground): Boolean {
     return this::class == other::class
 }
 
+private fun ChatSession.groupTitle(): String {
+    val members = members.ifEmpty { listOf(GroupMember(persona = persona)) }
+    return members.joinToString(" + ") { it.persona.displayName.ifBlank { "AI" } }
+}
+
+private fun ChatSession.matchesSessionQuery(query: String): Boolean {
+    val normalized = query.lowercase(Locale.getDefault())
+    if (groupTitle().lowercase(Locale.getDefault()).contains(normalized)) return true
+    if (preview.lowercase(Locale.getDefault()).contains(normalized)) return true
+    return messages.any { message ->
+        message.content.lowercase(Locale.getDefault()).contains(normalized) ||
+            message.speakerName.orEmpty().lowercase(Locale.getDefault()).contains(normalized)
+    }
+}
+
 @Composable
 private fun ApiKeySummary(
     activeApiKeyLabel: String?,
     tavilyApiKeyLabel: String?,
-    waifuApiTokenLabel: String?,
+    rule34UserIdLabel: String?,
+    rule34ApiKeyLabel: String?,
     quotaUsage: QuotaUsageState,
     dailyRequestLimit: Int?,
     onEditApiKey: () -> Unit,
     onClearApiKey: () -> Unit,
     onEditTavilyKey: () -> Unit,
     onClearTavilyKey: () -> Unit,
-    onEditWaifuToken: () -> Unit,
-    onClearWaifuToken: () -> Unit
+    onEditRule34UserId: () -> Unit,
+    onClearRule34UserId: () -> Unit,
+    onEditRule34ApiKey: () -> Unit,
+    onClearRule34ApiKey: () -> Unit
 ) {
     Text(
         text = "API keys",
@@ -2458,11 +3156,19 @@ private fun ApiKeySummary(
             )
             Spacer(modifier = Modifier.height(8.dp))
             ApiKeySlot(
-                label = "Waifu.im token",
-                keyLabel = waifuApiTokenLabel,
-                emptyText = "No Waifu.im token saved",
-                onEdit = onEditWaifuToken,
-                onClear = onClearWaifuToken
+                label = "Rule34 User ID",
+                keyLabel = rule34UserIdLabel,
+                emptyText = "No Rule34 User ID saved",
+                onEdit = onEditRule34UserId,
+                onClear = onClearRule34UserId
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            ApiKeySlot(
+                label = "Rule34 API Key",
+                keyLabel = rule34ApiKeyLabel,
+                emptyText = "No Rule34 API key saved",
+                onEdit = onEditRule34ApiKey,
+                onClear = onClearRule34ApiKey
             )
             QuotaMonitor(
                 usage = quotaUsage,
@@ -2676,6 +3382,174 @@ private fun AppSettingsDialog(
 }
 
 @Composable
+private fun AboutAppDialog(
+    appVersionLabel: String,
+    onDismiss: () -> Unit
+) {
+    val uriHandler = LocalUriHandler.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = AppSurface,
+        titleContentColor = AppTextPrimary,
+        textContentColor = AppTextSecondary,
+        title = {
+            Text(
+                text = "About",
+                style = MaterialTheme.typography.titleMedium
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = appVersionLabel,
+                    color = AppTextPrimary,
+                    style = MaterialTheme.typography.labelLarge
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "Created by Phan Chí Vỹ.",
+                    color = AppTextSecondary,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(18.dp))
+                Text(
+                    text = "API key setup",
+                    color = AppTextPrimary,
+                    style = MaterialTheme.typography.labelLarge
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                AboutStep("1. Open the provider dashboard for the model you want to use.")
+                AboutStep("2. Create or reveal an API key in that provider account.")
+                AboutStep("3. Copy the key, then open Persona settings in this app.")
+                AboutStep("4. Pick the matching API vendor and model.")
+                AboutStep("5. Tap API keys > Add key, paste it, and save.")
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "Provider dashboards",
+                    color = AppTextPrimary,
+                    style = MaterialTheme.typography.labelLarge
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                AboutLinkRow(
+                    label = "Google AI Studio",
+                    detail = "Gemini API key",
+                    url = "https://aistudio.google.com/app/apikey",
+                    onOpen = uriHandler::openUri
+                )
+                AboutLinkRow(
+                    label = "OpenAI Platform",
+                    detail = "GPT API keys",
+                    url = "https://platform.openai.com/api-keys",
+                    onOpen = uriHandler::openUri
+                )
+                AboutLinkRow(
+                    label = "Anthropic Console",
+                    detail = "Claude API keys",
+                    url = "https://console.anthropic.com/settings/keys",
+                    onOpen = uriHandler::openUri
+                )
+                AboutLinkRow(
+                    label = "xAI Console",
+                    detail = "Grok API keys",
+                    url = "https://console.x.ai/team/default/api-keys",
+                    onOpen = uriHandler::openUri
+                )
+                AboutLinkRow(
+                    label = "Mistral Console",
+                    detail = "Mistral/Mixtral API keys",
+                    url = "https://console.mistral.ai/api-keys",
+                    onOpen = uriHandler::openUri
+                )
+                AboutLinkRow(
+                    label = "Tavily Dashboard",
+                    detail = "Web search API key",
+                    url = "https://app.tavily.com/home",
+                    onOpen = uriHandler::openUri
+                )
+                AboutLinkRow(
+                    label = "Rule34 account options",
+                    detail = "Rule34 User ID and API key",
+                    url = "https://rule34.xxx/index.php?page=account&s=options",
+                    onOpen = uriHandler::openUri
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "Rule34 setup: sign in to Rule34, open account options, copy the numeric User ID and API key, then paste them into Persona settings > API keys. Rule34 image mode is adult-only.",
+                    color = AppTextSecondary,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "Keep API keys private. Do not post them online or commit them to GitHub.",
+                    color = Color(0xFFFFA0AA),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = "Done", color = AppAccentSoft)
+            }
+        }
+    )
+}
+
+@Composable
+private fun AboutStep(text: String) {
+    Text(
+        text = text,
+        color = AppTextSecondary,
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier.padding(vertical = 3.dp)
+    )
+}
+
+@Composable
+private fun AboutLinkRow(
+    label: String,
+    detail: String,
+    url: String,
+    onOpen: (String) -> Unit
+) {
+    Surface(
+        color = AppSurface2,
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, AppStroke),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .clickable { onOpen(url) }
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = label,
+                    color = AppTextPrimary,
+                    style = MaterialTheme.typography.labelLarge
+                )
+                Text(
+                    text = detail,
+                    color = AppTextSecondary,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            Text(
+                text = "Open",
+                color = AppAccentSoft,
+                style = MaterialTheme.typography.labelLarge
+            )
+        }
+    }
+}
+
+@Composable
 private fun AppNameChoiceRow(
     choice: AppNameChoice,
     selected: Boolean,
@@ -2836,6 +3710,41 @@ private fun ApiKeyDialog(
                     text = "Cancel",
                     color = AppTextSecondary
                 )
+            }
+        }
+    )
+}
+
+@Composable
+private fun RateLimitRetryDialog(
+    onDismiss: () -> Unit,
+    onRetry: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = AppSurface,
+        title = {
+            Text(
+                text = "Model limit hit",
+                color = AppTextPrimary,
+                style = MaterialTheme.typography.titleMedium
+            )
+        },
+        text = {
+            Text(
+                text = "The model returned a rate-limit or quota error. Retry the last message?",
+                color = AppTextSecondary,
+                style = MaterialTheme.typography.bodyMedium
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onRetry) {
+                Text(text = "Retry", color = AppAccentSoft)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = "Cancel", color = AppTextSecondary)
             }
         }
     )
