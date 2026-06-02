@@ -94,6 +94,48 @@ class ChatRepository private constructor(
         dao.replaceAll(sessionEntities, memberEntities, messageEntities)
     }
 
+    suspend fun latestTtsAudioCache(
+        messageId: String,
+        sourceHash: String,
+        provider: String,
+        voiceId: String,
+        modelId: String
+    ): TtsAudioCacheEntity? {
+        return dao.latestTtsAudioCache(
+            messageId = messageId,
+            sourceHash = sourceHash,
+            provider = provider,
+            voiceId = voiceId,
+            modelId = modelId
+        )
+    }
+
+    suspend fun exactTtsAudioCache(
+        messageId: String,
+        sourceHash: String,
+        preparedTextHash: String,
+        provider: String,
+        voiceId: String,
+        modelId: String
+    ): TtsAudioCacheEntity? {
+        return dao.exactTtsAudioCache(
+            messageId = messageId,
+            sourceHash = sourceHash,
+            preparedTextHash = preparedTextHash,
+            provider = provider,
+            voiceId = voiceId,
+            modelId = modelId
+        )
+    }
+
+    suspend fun saveTtsAudioCache(cache: TtsAudioCacheEntity) {
+        dao.insertTtsAudioCache(cache)
+    }
+
+    suspend fun deleteTtsAudioCache(id: String) {
+        dao.deleteTtsAudioCache(id)
+    }
+
     companion object {
         @Volatile
         private var instance: ChatRepository? = null

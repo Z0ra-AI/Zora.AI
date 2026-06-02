@@ -236,6 +236,37 @@ class GeminiChatService {
         }
     }
 
+    suspend fun prepareJapaneseSpeechText(
+        apiKey: String,
+        cleanedText: String
+    ): Result<String> = runCatching {
+        val model = GenerativeModel(
+            modelName = "gemini-3.1-flash-lite",
+            apiKey = apiKey,
+            generationConfig = generationConfig {
+                temperature = 0.2f
+                maxOutputTokens = 2048
+            },
+            safetySettings = safetySettings(SafetyLevel.None)
+        )
+        val prompt = """
+            Convert the following roleplay dialogue into natural spoken Japanese for text-to-speech.
+
+            Rules:
+            - Output only the final Japanese speech text.
+            - Keep only dialogue that should be spoken aloud.
+            - Do not include narration, actions, thoughts, role labels, markdown, or explanations.
+            - Preserve emotional tone and intimacy.
+            - Make the Japanese sound natural when spoken.
+            - Do not add new story content.
+
+            Text:
+            $cleanedText
+        """.trimIndent()
+        cleanSpeechPreparation(model.generateContent(prompt).text.orEmpty())
+            .ifBlank { cleanedText.trim() }
+    }
+
     private suspend fun sendGemini(
         apiKey: String,
         persona: PersonaEntity,
@@ -746,6 +777,18 @@ class GeminiChatService {
             .filter { tag -> tag.isNotBlank() && !tag.startsWith("rating") }
             .take(4)
             .joinToString(" ")
+    }
+
+    private fun cleanSpeechPreparation(raw: String): String {
+        return raw
+            .replace(Regex("(?s)```.*?```"), "")
+            .replace(Regex("^\\s*日本語\\s*[:：]\\s*", RegexOption.IGNORE_CASE), "")
+            .trim()
+            .trim('"', '\'', '`')
+            .lines()
+            .map { line -> line.trim() }
+            .filter { it.isNotBlank() }
+            .joinToString("\n")
     }
 
     fun fallbackRule34Tags(userRequest: String): String {

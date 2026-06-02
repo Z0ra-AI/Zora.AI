@@ -29,6 +29,53 @@ abstract class ChatDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     abstract suspend fun insertMessages(messages: List<MessageEntity>)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    abstract suspend fun insertTtsAudioCache(cache: TtsAudioCacheEntity)
+
+    @Query(
+        """
+        SELECT * FROM tts_audio_cache
+        WHERE messageId = :messageId
+            AND sourceHash = :sourceHash
+            AND provider = :provider
+            AND voiceId = :voiceId
+            AND modelId = :modelId
+        ORDER BY createdAt DESC
+        LIMIT 1
+        """
+    )
+    abstract suspend fun latestTtsAudioCache(
+        messageId: String,
+        sourceHash: String,
+        provider: String,
+        voiceId: String,
+        modelId: String
+    ): TtsAudioCacheEntity?
+
+    @Query(
+        """
+        SELECT * FROM tts_audio_cache
+        WHERE messageId = :messageId
+            AND sourceHash = :sourceHash
+            AND preparedTextHash = :preparedTextHash
+            AND provider = :provider
+            AND voiceId = :voiceId
+            AND modelId = :modelId
+        LIMIT 1
+        """
+    )
+    abstract suspend fun exactTtsAudioCache(
+        messageId: String,
+        sourceHash: String,
+        preparedTextHash: String,
+        provider: String,
+        voiceId: String,
+        modelId: String
+    ): TtsAudioCacheEntity?
+
+    @Query("DELETE FROM tts_audio_cache WHERE id = :id")
+    abstract suspend fun deleteTtsAudioCache(id: String)
+
     @Query("DELETE FROM messages")
     abstract suspend fun deleteMessages()
 

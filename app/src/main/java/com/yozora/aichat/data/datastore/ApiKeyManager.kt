@@ -18,6 +18,9 @@ class ApiKeyManager(
     private val tavilyApiKey = stringPreferencesKey("tavily_api_key")
     private val r34ApiKey = stringPreferencesKey("r34_api_key")
     private val r34UserId = stringPreferencesKey("r34_user_id")
+    private val elevenLabsApiKey = stringPreferencesKey("elevenlabs_api_key")
+    private val elevenLabsVoiceId = stringPreferencesKey("elevenlabs_voice_id")
+    private val elevenLabsModelId = stringPreferencesKey("elevenlabs_model_id")
 
     val keys: Flow<List<String>> = dataStore.data.map { preferences ->
         preferences[keysKey]?.toList().orEmpty()
@@ -127,6 +130,18 @@ class ApiKeyManager(
         preferences[r34UserId]
     }
 
+    val elevenLabsKey: Flow<String?> = dataStore.data.map { preferences ->
+        preferences[elevenLabsApiKey]
+    }
+
+    val elevenLabsVoice: Flow<String?> = dataStore.data.map { preferences ->
+        preferences[elevenLabsVoiceId]
+    }
+
+    val elevenLabsModel: Flow<String?> = dataStore.data.map { preferences ->
+        preferences[elevenLabsModelId]
+    }
+
     suspend fun keyForRule34Api(): String? {
         return dataStore.data.first()[r34ApiKey]
     }
@@ -169,6 +184,71 @@ class ApiKeyManager(
         }
     }
 
+    suspend fun keyForElevenLabs(): String? {
+        return dataStore.data.first()[elevenLabsApiKey]
+    }
+
+    suspend fun voiceIdForElevenLabs(): String? {
+        return dataStore.data.first()[elevenLabsVoiceId]
+    }
+
+    suspend fun modelIdForElevenLabs(): String {
+        return dataStore.data.first()[elevenLabsModelId]
+            ?.takeIf { it.isNotBlank() }
+            ?: DEFAULT_ELEVENLABS_MODEL_ID
+    }
+
+    suspend fun replaceElevenLabsKey(key: String) {
+        val trimmed = key.trim()
+        dataStore.edit { preferences ->
+            if (trimmed.isEmpty()) {
+                preferences.remove(elevenLabsApiKey)
+            } else {
+                preferences[elevenLabsApiKey] = trimmed
+            }
+        }
+    }
+
+    suspend fun replaceElevenLabsVoiceId(voiceId: String) {
+        val trimmed = voiceId.trim()
+        dataStore.edit { preferences ->
+            if (trimmed.isEmpty()) {
+                preferences.remove(elevenLabsVoiceId)
+            } else {
+                preferences[elevenLabsVoiceId] = trimmed
+            }
+        }
+    }
+
+    suspend fun replaceElevenLabsModelId(modelId: String) {
+        val trimmed = modelId.trim()
+        dataStore.edit { preferences ->
+            if (trimmed.isEmpty()) {
+                preferences.remove(elevenLabsModelId)
+            } else {
+                preferences[elevenLabsModelId] = trimmed
+            }
+        }
+    }
+
+    suspend fun clearElevenLabsKey() {
+        dataStore.edit { preferences ->
+            preferences.remove(elevenLabsApiKey)
+        }
+    }
+
+    suspend fun clearElevenLabsVoiceId() {
+        dataStore.edit { preferences ->
+            preferences.remove(elevenLabsVoiceId)
+        }
+    }
+
+    suspend fun clearElevenLabsModelId() {
+        dataStore.edit { preferences ->
+            preferences.remove(elevenLabsModelId)
+        }
+    }
+
     fun providerKeys(providerIds: List<String>): Flow<Map<String, String>> {
         return dataStore.data.map { preferences ->
             providerIds.mapNotNull { id ->
@@ -197,4 +277,8 @@ class ApiKeyManager(
     private fun providerKey(providerId: String) = stringPreferencesKey("api_key_$providerId")
 
     private fun Int.floorMod(divisor: Int): Int = ((this % divisor) + divisor) % divisor
+
+    companion object {
+        const val DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
+    }
 }

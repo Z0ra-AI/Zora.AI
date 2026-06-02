@@ -71,3 +71,37 @@ data class MessageEntity(
     val time: String = "",
     val position: Int = 0
 )
+
+@Entity(
+    tableName = "tts_audio_cache",
+    indices = [
+        Index(
+            value = [
+                "messageId",
+                "sourceHash",
+                "preparedTextHash",
+                "provider",
+                "voiceId",
+                "modelId"
+            ],
+            unique = true
+        ),
+        Index("messageId", "sourceHash", "provider", "voiceId", "modelId")
+    ]
+)
+data class TtsAudioCacheEntity(
+    @PrimaryKey val id: String = UUID.randomUUID().toString(),
+    val messageId: String,
+    val sessionId: String,
+    val sourceHash: String,
+    val cleanedTextHash: String,
+    val preparedTextHash: String,
+    val provider: String,
+    val voiceId: String,
+    val modelId: String,
+    val language: String,
+    val audioFilePath: String,
+    val characterCount: Int,
+    val durationMs: Long? = null,
+    val createdAt: Long = System.currentTimeMillis()
+)

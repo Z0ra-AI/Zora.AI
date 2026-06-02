@@ -82,6 +82,7 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material.icons.rounded.Upload
+import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -130,6 +131,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
@@ -151,6 +153,7 @@ import com.yozora.aichat.ui.chat.InstructionMode
 import com.yozora.aichat.ui.chat.PersonaUiState
 import com.yozora.aichat.ui.chat.QuotaUsageState
 import com.yozora.aichat.ui.chat.SafetyLevel
+import com.yozora.aichat.ui.chat.TtsPreviewState
 import com.yozora.aichat.ui.theme.AIChatTheme
 import com.yozora.aichat.ui.theme.AppAccent
 import com.yozora.aichat.ui.theme.AppAccentDim
@@ -310,6 +313,9 @@ fun CompanionChatApp(
                 tavilyApiKeyLabel = viewModel.tavilyApiKeyLabel,
                 rule34UserIdLabel = viewModel.rule34UserIdLabel,
                 rule34ApiKeyLabel = viewModel.rule34ApiKeyLabel,
+                elevenLabsApiKeyLabel = viewModel.elevenLabsApiKeyLabel,
+                elevenLabsVoiceIdLabel = viewModel.elevenLabsVoiceIdLabel,
+                elevenLabsModelIdLabel = viewModel.elevenLabsModelIdLabel,
                 quotaUsage = viewModel.quotaUsage,
                 dailyRequestLimit = viewModel.dailyRequestLimit,
                 onBack = viewModel::closePersonaSheet,
@@ -340,6 +346,12 @@ fun CompanionChatApp(
                 onClearRule34UserId = viewModel::clearRule34UserId,
                 onEditRule34ApiKey = viewModel::openRule34ApiKeyDialog,
                 onClearRule34ApiKey = viewModel::clearRule34ApiKey,
+                onEditElevenLabsKey = viewModel::openElevenLabsApiKeyDialog,
+                onClearElevenLabsKey = viewModel::clearElevenLabsApiKey,
+                onEditElevenLabsVoiceId = viewModel::openElevenLabsVoiceIdDialog,
+                onClearElevenLabsVoiceId = viewModel::clearElevenLabsVoiceId,
+                onEditElevenLabsModelId = viewModel::openElevenLabsModelIdDialog,
+                onClearElevenLabsModelId = viewModel::clearElevenLabsModelId,
                 onDeleteSession = viewModel::deleteActiveSession,
                 onSave = viewModel::savePersona
             )
@@ -352,7 +364,8 @@ fun CompanionChatApp(
             value = viewModel.apiKeyDraft,
             onValueChange = viewModel::updateApiKeyDraft,
             onDismiss = viewModel::closeApiKeyDialog,
-            onSave = viewModel::saveApiKey
+            onSave = viewModel::saveApiKey,
+            secureInput = viewModel.apiKeyDialogSecure
         )
     }
 
@@ -391,7 +404,20 @@ fun CompanionChatApp(
             onRetry = {
                 viewModel.retryMessage(message.id)
                 actionMessage = null
+            },
+            onSpeak = {
+                viewModel.speakMessage(message)
+                actionMessage = null
             }
+        )
+    }
+
+    viewModel.ttsPreviewState?.let { preview ->
+        SpeechPreviewSheet(
+            state = preview,
+            onTextChange = viewModel::updateTtsPreviewText,
+            onDismiss = viewModel::dismissTtsPreview,
+            onGenerate = viewModel::generateAndPlayTtsPreview
         )
     }
 
@@ -413,6 +439,7 @@ fun CompanionChatApp(
         viewModel.appSettingsVisible -> BackHandler(onBack = viewModel::closeAppSettings)
         aboutDialogVisible -> BackHandler { aboutDialogVisible = false }
         viewModel.rateLimitDialogVisible -> BackHandler(onBack = viewModel::dismissRateLimitDialog)
+        viewModel.ttsPreviewState != null -> BackHandler(onBack = viewModel::dismissTtsPreview)
         actionMessage != null -> BackHandler { actionMessage = null }
         viewModel.personaSheetVisible -> BackHandler(onBack = viewModel::closePersonaSheet)
         viewModel.sessionDrawerVisible -> BackHandler(onBack = viewModel::closeSessionDrawer)
@@ -1490,7 +1517,8 @@ private fun MessageActionSheet(
     onDismiss: () -> Unit,
     onCopy: () -> Unit,
     onEdit: () -> Unit,
-    onRetry: () -> Unit
+    onRetry: () -> Unit,
+    onSpeak: () -> Unit
 ) {
     val isUser = message.role == "user"
     Box(
@@ -1553,6 +1581,164 @@ private fun MessageActionSheet(
                     label = if (isUser) "Retry from here" else "Retry response",
                     onClick = onRetry
                 )
+                if (!isUser && message.content.isNotBlank()) {
+                    ActionSheetRow(
+                        icon = Icons.Rounded.VolumeUp,
+                        label = "Speak",
+                        onClick = onSpeak
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SpeechPreviewSheet(
+    state: TtsPreviewState,
+    onTextChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onGenerate: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.46f))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onDismiss
+            ),
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        Surface(
+            color = AppSurface,
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            border = BorderStroke(1.dp, AppStroke),
+            shadowElevation = 18.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = {}
+                )
+        ) {
+            Column(
+                modifier = Modifier
+                    .navigationBarsPadding()
+                    .padding(horizontal = 18.dp, vertical = 14.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .width(42.dp)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(AppStroke)
+                )
+                Text(
+                    text = "Speech preview",
+                    color = AppTextPrimary,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(top = 18.dp)
+                )
+                Text(
+                    text = "Edit before ElevenLabs uses credits.",
+                    color = AppTextSecondary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
+                )
+
+                if (state.isPreparing) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 18.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        CircularProgressIndicator(
+                            color = AppAccentSoft,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "Preparing Japanese speech",
+                            color = AppTextSecondary,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                } else {
+                    OutlinedTextField(
+                        value = state.text,
+                        onValueChange = onTextChange,
+                        enabled = !state.isGenerating,
+                        minLines = 4,
+                        maxLines = 8,
+                        shape = RoundedCornerShape(16.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = AppTextPrimary,
+                            unfocusedTextColor = AppTextPrimary,
+                            disabledTextColor = AppTextSecondary,
+                            focusedBorderColor = AppAccent.copy(alpha = 0.7f),
+                            unfocusedBorderColor = AppStroke,
+                            disabledBorderColor = AppStroke,
+                            cursorColor = AppAccent,
+                            focusedContainerColor = AppSurface2,
+                            unfocusedContainerColor = AppSurface2,
+                            disabledContainerColor = AppSurface2
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 148.dp)
+                    )
+                    Text(
+                        text = "Estimated ElevenLabs usage: ${state.characterCount} chars",
+                        color = AppTextSecondary,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 14.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(
+                        onClick = onDismiss,
+                        enabled = !state.isGenerating
+                    ) {
+                        Text(
+                            text = "Cancel",
+                            color = AppTextSecondary
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = onGenerate,
+                        enabled = !state.isPreparing && !state.isGenerating && state.text.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(containerColor = AppAccent),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        if (state.isGenerating) {
+                            CircularProgressIndicator(
+                                color = Color.White,
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                        }
+                        Text(
+                            text = if (state.isGenerating) "Generating" else "Generate & play",
+                            color = Color.White
+                        )
+                    }
+                }
             }
         }
     }
@@ -2216,6 +2402,9 @@ private fun PersonaSettingsSheet(
     tavilyApiKeyLabel: String?,
     rule34UserIdLabel: String?,
     rule34ApiKeyLabel: String?,
+    elevenLabsApiKeyLabel: String?,
+    elevenLabsVoiceIdLabel: String?,
+    elevenLabsModelIdLabel: String?,
     quotaUsage: QuotaUsageState,
     dailyRequestLimit: Int?,
     onBack: () -> Unit,
@@ -2246,6 +2435,12 @@ private fun PersonaSettingsSheet(
     onClearRule34UserId: () -> Unit,
     onEditRule34ApiKey: () -> Unit,
     onClearRule34ApiKey: () -> Unit,
+    onEditElevenLabsKey: () -> Unit,
+    onClearElevenLabsKey: () -> Unit,
+    onEditElevenLabsVoiceId: () -> Unit,
+    onClearElevenLabsVoiceId: () -> Unit,
+    onEditElevenLabsModelId: () -> Unit,
+    onClearElevenLabsModelId: () -> Unit,
     onDeleteSession: () -> Unit,
     onSave: () -> Unit
 ) {
@@ -2341,6 +2536,9 @@ private fun PersonaSettingsSheet(
                 tavilyApiKeyLabel = tavilyApiKeyLabel,
                 rule34UserIdLabel = rule34UserIdLabel,
                 rule34ApiKeyLabel = rule34ApiKeyLabel,
+                elevenLabsApiKeyLabel = elevenLabsApiKeyLabel,
+                elevenLabsVoiceIdLabel = elevenLabsVoiceIdLabel,
+                elevenLabsModelIdLabel = elevenLabsModelIdLabel,
                 quotaUsage = quotaUsage,
                 dailyRequestLimit = dailyRequestLimit,
                 onToggle = onToggleMore,
@@ -2357,7 +2555,13 @@ private fun PersonaSettingsSheet(
                 onEditRule34UserId = onEditRule34UserId,
                 onClearRule34UserId = onClearRule34UserId,
                 onEditRule34ApiKey = onEditRule34ApiKey,
-                onClearRule34ApiKey = onClearRule34ApiKey
+                onClearRule34ApiKey = onClearRule34ApiKey,
+                onEditElevenLabsKey = onEditElevenLabsKey,
+                onClearElevenLabsKey = onClearElevenLabsKey,
+                onEditElevenLabsVoiceId = onEditElevenLabsVoiceId,
+                onClearElevenLabsVoiceId = onClearElevenLabsVoiceId,
+                onEditElevenLabsModelId = onEditElevenLabsModelId,
+                onClearElevenLabsModelId = onClearElevenLabsModelId
             )
 
             Button(
@@ -2894,6 +3098,9 @@ private fun MoreOptions(
     tavilyApiKeyLabel: String?,
     rule34UserIdLabel: String?,
     rule34ApiKeyLabel: String?,
+    elevenLabsApiKeyLabel: String?,
+    elevenLabsVoiceIdLabel: String?,
+    elevenLabsModelIdLabel: String?,
     quotaUsage: QuotaUsageState,
     dailyRequestLimit: Int?,
     onToggle: () -> Unit,
@@ -2910,7 +3117,13 @@ private fun MoreOptions(
     onEditRule34UserId: () -> Unit,
     onClearRule34UserId: () -> Unit,
     onEditRule34ApiKey: () -> Unit,
-    onClearRule34ApiKey: () -> Unit
+    onClearRule34ApiKey: () -> Unit,
+    onEditElevenLabsKey: () -> Unit,
+    onClearElevenLabsKey: () -> Unit,
+    onEditElevenLabsVoiceId: () -> Unit,
+    onClearElevenLabsVoiceId: () -> Unit,
+    onEditElevenLabsModelId: () -> Unit,
+    onClearElevenLabsModelId: () -> Unit
 ) {
     Surface(
         color = AppSurface,
@@ -2979,6 +3192,9 @@ private fun MoreOptions(
                         tavilyApiKeyLabel = tavilyApiKeyLabel,
                         rule34UserIdLabel = rule34UserIdLabel,
                         rule34ApiKeyLabel = rule34ApiKeyLabel,
+                        elevenLabsApiKeyLabel = elevenLabsApiKeyLabel,
+                        elevenLabsVoiceIdLabel = elevenLabsVoiceIdLabel,
+                        elevenLabsModelIdLabel = elevenLabsModelIdLabel,
                         quotaUsage = quotaUsage,
                         dailyRequestLimit = dailyRequestLimit,
                         onEditApiKey = onEditApiKey,
@@ -2988,7 +3204,13 @@ private fun MoreOptions(
                         onEditRule34UserId = onEditRule34UserId,
                         onClearRule34UserId = onClearRule34UserId,
                         onEditRule34ApiKey = onEditRule34ApiKey,
-                        onClearRule34ApiKey = onClearRule34ApiKey
+                        onClearRule34ApiKey = onClearRule34ApiKey,
+                        onEditElevenLabsKey = onEditElevenLabsKey,
+                        onClearElevenLabsKey = onClearElevenLabsKey,
+                        onEditElevenLabsVoiceId = onEditElevenLabsVoiceId,
+                        onClearElevenLabsVoiceId = onClearElevenLabsVoiceId,
+                        onEditElevenLabsModelId = onEditElevenLabsModelId,
+                        onClearElevenLabsModelId = onClearElevenLabsModelId
                     )
                 }
             }
@@ -3115,6 +3337,9 @@ private fun ApiKeySummary(
     tavilyApiKeyLabel: String?,
     rule34UserIdLabel: String?,
     rule34ApiKeyLabel: String?,
+    elevenLabsApiKeyLabel: String?,
+    elevenLabsVoiceIdLabel: String?,
+    elevenLabsModelIdLabel: String?,
     quotaUsage: QuotaUsageState,
     dailyRequestLimit: Int?,
     onEditApiKey: () -> Unit,
@@ -3124,7 +3349,13 @@ private fun ApiKeySummary(
     onEditRule34UserId: () -> Unit,
     onClearRule34UserId: () -> Unit,
     onEditRule34ApiKey: () -> Unit,
-    onClearRule34ApiKey: () -> Unit
+    onClearRule34ApiKey: () -> Unit,
+    onEditElevenLabsKey: () -> Unit,
+    onClearElevenLabsKey: () -> Unit,
+    onEditElevenLabsVoiceId: () -> Unit,
+    onClearElevenLabsVoiceId: () -> Unit,
+    onEditElevenLabsModelId: () -> Unit,
+    onClearElevenLabsModelId: () -> Unit
 ) {
     Text(
         text = "API keys",
@@ -3169,6 +3400,30 @@ private fun ApiKeySummary(
                 emptyText = "No Rule34 API key saved",
                 onEdit = onEditRule34ApiKey,
                 onClear = onClearRule34ApiKey
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            ApiKeySlot(
+                label = "ElevenLabs API key",
+                keyLabel = elevenLabsApiKeyLabel,
+                emptyText = "No ElevenLabs key saved",
+                onEdit = onEditElevenLabsKey,
+                onClear = onClearElevenLabsKey
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            ApiKeySlot(
+                label = "ElevenLabs voice ID",
+                keyLabel = elevenLabsVoiceIdLabel,
+                emptyText = "No ElevenLabs voice ID saved",
+                onEdit = onEditElevenLabsVoiceId,
+                onClear = onClearElevenLabsVoiceId
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            ApiKeySlot(
+                label = "ElevenLabs model",
+                keyLabel = elevenLabsModelIdLabel,
+                emptyText = "eleven_multilingual_v2",
+                onEdit = onEditElevenLabsModelId,
+                onClear = onClearElevenLabsModelId
             )
             QuotaMonitor(
                 usage = quotaUsage,
@@ -3471,6 +3726,12 @@ private fun AboutAppDialog(
                     onOpen = uriHandler::openUri
                 )
                 AboutLinkRow(
+                    label = "ElevenLabs",
+                    detail = "TTS API key, voice ID, and model ID",
+                    url = "https://elevenlabs.io/app/settings/api-keys",
+                    onOpen = uriHandler::openUri
+                )
+                AboutLinkRow(
                     label = "Rule34 account options",
                     detail = "Rule34 User ID and API key",
                     url = "https://rule34.xxx/index.php?page=account&s=options",
@@ -3479,6 +3740,12 @@ private fun AboutAppDialog(
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
                     text = "Rule34 setup: sign in to Rule34, open account options, copy the numeric User ID and API key, then paste them into Persona settings > API keys. Rule34 image mode is adult-only.",
+                    color = AppTextSecondary,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "ElevenLabs setup: create an API key, copy a Voice ID from your voices, then paste both into Persona settings > API keys. Some voices return 402 unless your ElevenLabs account has the required paid plan or subscription.",
                     color = AppTextSecondary,
                     style = MaterialTheme.typography.bodyMedium
                 )
@@ -3649,7 +3916,8 @@ private fun ApiKeyDialog(
     value: String,
     onValueChange: (String) -> Unit,
     onDismiss: () -> Unit,
-    onSave: () -> Unit
+    onSave: () -> Unit,
+    secureInput: Boolean = true
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -3667,9 +3935,13 @@ private fun ApiKeyDialog(
                     value = value,
                     onValueChange = onValueChange,
                     singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
+                    visualTransformation = if (secureInput) {
+                        PasswordVisualTransformation()
+                    } else {
+                        VisualTransformation.None
+                    },
                     keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Password,
+                        keyboardType = if (secureInput) KeyboardType.Password else KeyboardType.Text,
                         imeAction = ImeAction.Done
                     ),
                     keyboardActions = KeyboardActions(onDone = { onSave() }),

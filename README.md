@@ -29,6 +29,7 @@ The visible app name can also be switched from inside the app settings.
 - Web search tool through Tavily as an optional RAG layer.
 - Gemini grounding support when using Google-compatible search flow.
 - Optional Rule34 image tool for adult image search.
+- Optional ElevenLabs text-to-speech for AI responses, with local audio caching after generation.
 - Multiple API vendor options, including Google, OpenAI, Claude, Grok, and Mistral-compatible flows.
 - App icon presets and app name presets.
 
@@ -41,10 +42,11 @@ Local-only data:
 - API keys entered by the user.
 - Chat sessions and messages.
 - Persona settings.
+- Cached TTS audio generated from AI messages.
 - App preferences.
 - Local quota counters.
 
-Network requests only happen when the user sends a message or uses an enabled tool. Requests go to the selected model provider and, when enabled, Tavily or Rule34.
+Network requests only happen when the user sends a message or uses an enabled tool. Requests go to the selected model provider and, when enabled, Tavily, Rule34, or ElevenLabs.
 
 ## Master Prompt
 
@@ -70,9 +72,12 @@ Useful links:
 - xAI Console: https://console.x.ai/
 - Mistral Console: https://console.mistral.ai/api-keys/
 - Tavily Dashboard: https://app.tavily.com/
+- ElevenLabs API keys: https://elevenlabs.io/app/settings/api-keys
 - Rule34 account options: https://rule34.xxx/index.php?page=account&s=options
 
 Rule34 requires both the numeric user ID and API key from the account options page.
+
+ElevenLabs TTS requires an API key and voice ID. Some ElevenLabs voices may return a `402 payment_required` error unless the account has the required paid plan or subscription for that voice/API usage.
 
 ## Build
 

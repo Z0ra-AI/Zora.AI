@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaPlayer
 import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -20,6 +21,9 @@ import com.yozora.aichat.data.datastore.settingsDataStore
 import com.yozora.aichat.data.db.ChatRepository
 import com.yozora.aichat.data.db.MessageEntity
 import com.yozora.aichat.data.db.PersonaEntity
+import com.yozora.aichat.data.db.TtsAudioCacheEntity
+import com.yozora.aichat.data.remote.ElevenLabsTtsException
+import com.yozora.aichat.data.remote.ElevenLabsTtsRepository
 import com.yozora.aichat.data.remote.GeminiChatReply
 import com.yozora.aichat.data.remote.GeminiChatService
 import com.yozora.aichat.data.remote.Rule34ImageRepository
@@ -34,6 +38,7 @@ import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -208,11 +213,35 @@ data class QuotaUsageState(
     val lastTotalTokens: Int = 0
 )
 
+data class TtsPreviewState(
+    val messageId: String,
+    val text: String,
+    val isPreparing: Boolean = false,
+    val isGenerating: Boolean = false
+) {
+    val characterCount: Int
+        get() = text.length
+}
+
+private data class PendingTtsRequest(
+    val messageId: String,
+    val sessionId: String,
+    val sourceText: String,
+    val sourceHash: String,
+    val cleanedText: String,
+    val cleanedTextHash: String,
+    val voiceId: String,
+    val modelId: String
+)
+
 private enum class ApiKeyDialogTarget {
     Provider,
     Tavily,
     Rule34UserId,
-    Rule34ApiKey
+    Rule34ApiKey,
+    ElevenLabsKey,
+    ElevenLabsVoiceId,
+    ElevenLabsModelId
 }
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
@@ -221,6 +250,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val geminiChatService = GeminiChatService()
     private val tavilyRepository = TavilyRepository()
     private val rule34ImageRepository = Rule34ImageRepository()
+    private val elevenLabsTtsRepository = ElevenLabsTtsRepository()
     private val chatRepository = ChatRepository.get(application)
     private val masterSystemPrompt = loadMasterPrompt(application)
     private val chatStateKey = stringPreferencesKey("chat_state_v1")
@@ -230,6 +260,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var restoringState = false
     private val persistMutex = Mutex()
     private val maxAttachedImages = 6
+    private var pendingTtsRequest: PendingTtsRequest? = null
+    private var mediaPlayer: MediaPlayer? = null
 
     var draft by mutableStateOf("")
         private set
@@ -264,6 +296,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private set
 
     var rule34UserIdLabel by mutableStateOf<String?>(null)
+        private set
+
+    var elevenLabsApiKeyLabel by mutableStateOf<String?>(null)
+        private set
+
+    var elevenLabsVoiceIdLabel by mutableStateOf<String?>(null)
+        private set
+
+    var elevenLabsModelIdLabel by mutableStateOf(ApiKeyManager.DEFAULT_ELEVENLABS_MODEL_ID)
+        private set
+
+    var ttsPreviewState by mutableStateOf<TtsPreviewState?>(null)
+        private set
+
+    var ttsPlaybackMessageId by mutableStateOf<String?>(null)
         private set
 
     var chatError by mutableStateOf<String?>(null)
@@ -335,6 +382,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             ApiKeyDialogTarget.Tavily -> "Tavily API key"
             ApiKeyDialogTarget.Rule34UserId -> "Rule34 User ID"
             ApiKeyDialogTarget.Rule34ApiKey -> "Rule34 API Key"
+            ApiKeyDialogTarget.ElevenLabsKey -> "ElevenLabs API key"
+            ApiKeyDialogTarget.ElevenLabsVoiceId -> "ElevenLabs voice ID"
+            ApiKeyDialogTarget.ElevenLabsModelId -> "ElevenLabs model ID"
+        }
+
+    val apiKeyDialogSecure: Boolean
+        get() = when (apiKeyDialogTarget) {
+            ApiKeyDialogTarget.ElevenLabsVoiceId,
+            ApiKeyDialogTarget.ElevenLabsModelId -> false
+
+            else -> true
         }
 
     val canUseWebSearch: Boolean
@@ -377,6 +435,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             apiKeyManager.rule34UserId.collectLatest { userId ->
                 rule34UserIdLabel = userId?.let(apiKeyManager::mask)
+            }
+        }
+        viewModelScope.launch {
+            apiKeyManager.elevenLabsKey.collectLatest { key ->
+                elevenLabsApiKeyLabel = key?.let(apiKeyManager::mask)
+            }
+        }
+        viewModelScope.launch {
+            apiKeyManager.elevenLabsVoice.collectLatest { voiceId ->
+                elevenLabsVoiceIdLabel = voiceId?.let(::compactLabel)
+            }
+        }
+        viewModelScope.launch {
+            apiKeyManager.elevenLabsModel.collectLatest { modelId ->
+                elevenLabsModelIdLabel = modelId?.takeIf { it.isNotBlank() }
+                    ?: ApiKeyManager.DEFAULT_ELEVENLABS_MODEL_ID
             }
         }
     }
@@ -765,6 +839,196 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         sendDraft()
     }
 
+    fun speakMessage(message: ChatMessage) {
+        if (message.role != "model" || message.content.isBlank()) return
+        viewModelScope.launch {
+            val voiceId = apiKeyManager.voiceIdForElevenLabs()?.trim()
+            if (voiceId.isNullOrBlank()) {
+                openElevenLabsVoiceIdDialog()
+                chatError = "Add an ElevenLabs voice ID first."
+                return@launch
+            }
+            val modelId = apiKeyManager.modelIdForElevenLabs()
+            val sourceHash = sha256(message.content)
+            val cached = chatRepository.latestTtsAudioCache(
+                messageId = message.id,
+                sourceHash = sourceHash,
+                provider = TTS_PROVIDER_ELEVENLABS,
+                voiceId = voiceId,
+                modelId = modelId
+            )
+            if (cached != null) {
+                val file = File(cached.audioFilePath)
+                if (file.exists()) {
+                    chatError = null
+                    playTtsAudio(file, message.id)
+                    return@launch
+                }
+                chatRepository.deleteTtsAudioCache(cached.id)
+            }
+
+            val cleanedText = cleanSpeakableText(message.content)
+            if (cleanedText.isBlank()) {
+                chatError = "No speakable dialogue in this message."
+                return@launch
+            }
+
+            val sessionId = activeSessionId
+            pendingTtsRequest = PendingTtsRequest(
+                messageId = message.id,
+                sessionId = sessionId,
+                sourceText = message.content,
+                sourceHash = sourceHash,
+                cleanedText = cleanedText,
+                cleanedTextHash = sha256(cleanedText),
+                voiceId = voiceId,
+                modelId = modelId
+            )
+            ttsPreviewState = TtsPreviewState(
+                messageId = message.id,
+                text = "",
+                isPreparing = true
+            )
+            chatError = null
+
+            val googleKey = apiKeyManager.keyForProvider(ApiVendor.Google.id)
+            val preparedText = if (!googleKey.isNullOrBlank()) {
+                geminiChatService.prepareJapaneseSpeechText(
+                    apiKey = googleKey,
+                    cleanedText = cleanedText
+                ).getOrElse { throwable ->
+                    if (cleanedText.containsJapanese()) {
+                        cleanedText
+                    } else {
+                        chatError = throwable.message?.take(180) ?: "Could not prepare speech text."
+                        ""
+                    }
+                }
+            } else if (cleanedText.containsJapanese()) {
+                cleanedText
+            } else {
+                chatError = "Add a Google API key to prepare Japanese speech."
+                ""
+            }
+
+            if (preparedText.isBlank()) {
+                ttsPreviewState = null
+                pendingTtsRequest = null
+                return@launch
+            }
+
+            ttsPreviewState = TtsPreviewState(
+                messageId = message.id,
+                text = preparedText,
+                isPreparing = false
+            )
+        }
+    }
+
+    fun updateTtsPreviewText(value: String) {
+        ttsPreviewState = ttsPreviewState?.copy(text = value)
+    }
+
+    fun dismissTtsPreview() {
+        if (ttsPreviewState?.isGenerating == true) return
+        ttsPreviewState = null
+        pendingTtsRequest = null
+    }
+
+    fun generateAndPlayTtsPreview() {
+        val request = pendingTtsRequest ?: return
+        val preview = ttsPreviewState ?: return
+        val finalText = preview.text.trim()
+        if (finalText.isBlank()) {
+            chatError = "No speech text to generate."
+            return
+        }
+        viewModelScope.launch {
+            val apiKey = apiKeyManager.keyForElevenLabs()
+            if (apiKey.isNullOrBlank()) {
+                openElevenLabsApiKeyDialog()
+                chatError = "Add an ElevenLabs API key first."
+                return@launch
+            }
+            val preparedTextHash = sha256(finalText)
+            val exactCache = chatRepository.exactTtsAudioCache(
+                messageId = request.messageId,
+                sourceHash = request.sourceHash,
+                preparedTextHash = preparedTextHash,
+                provider = TTS_PROVIDER_ELEVENLABS,
+                voiceId = request.voiceId,
+                modelId = request.modelId
+            )
+            if (exactCache != null) {
+                val file = File(exactCache.audioFilePath)
+                if (file.exists()) {
+                    ttsPreviewState = null
+                    pendingTtsRequest = null
+                    chatError = null
+                    playTtsAudio(file, request.messageId)
+                    return@launch
+                }
+                chatRepository.deleteTtsAudioCache(exactCache.id)
+            }
+
+            ttsPreviewState = preview.copy(isGenerating = true)
+            chatError = null
+            runCatching {
+                val audioBytes = elevenLabsTtsRepository.generateSpeechMp3(
+                    apiKey = apiKey,
+                    voiceId = request.voiceId,
+                    modelId = request.modelId,
+                    text = finalText
+                )
+                val cacheId = UUID.randomUUID().toString()
+                val audioFile = writeTtsAudioFile(cacheId, audioBytes)
+                chatRepository.saveTtsAudioCache(
+                    TtsAudioCacheEntity(
+                        id = cacheId,
+                        messageId = request.messageId,
+                        sessionId = request.sessionId,
+                        sourceHash = request.sourceHash,
+                        cleanedTextHash = request.cleanedTextHash,
+                        preparedTextHash = preparedTextHash,
+                        provider = TTS_PROVIDER_ELEVENLABS,
+                        voiceId = request.voiceId,
+                        modelId = request.modelId,
+                        language = "ja-JP",
+                        audioFilePath = audioFile.absolutePath,
+                        characterCount = finalText.length
+                    )
+                )
+                audioFile
+            }.onSuccess { audioFile ->
+                ttsPreviewState = null
+                pendingTtsRequest = null
+                playTtsAudio(audioFile, request.messageId)
+            }.onFailure { throwable ->
+                ttsPreviewState = ttsPreviewState?.copy(isGenerating = false)
+                chatError = when (throwable) {
+                    is ElevenLabsTtsException -> when (throwable.statusCode) {
+                        401, 403 -> "ElevenLabs key or voice permission failed."
+                        429 -> "TTS quota hit. Try again later."
+                        else -> throwable.message?.take(180) ?: "ElevenLabs TTS failed."
+                    }
+
+                    else -> throwable.message?.take(180) ?: "Could not generate speech."
+                }
+            }
+        }
+    }
+
+    fun stopTtsPlayback() {
+        mediaPlayer?.let { player ->
+            runCatching {
+                if (player.isPlaying) player.stop()
+                player.release()
+            }
+        }
+        mediaPlayer = null
+        ttsPlaybackMessageId = null
+    }
+
     fun requestAnimeImage(request: String) {
         val cleanRequest = request.trim()
         if (cleanRequest.isEmpty()) return
@@ -1124,6 +1388,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         apiKeyDialogVisible = true
     }
 
+    fun openElevenLabsApiKeyDialog() {
+        apiKeyDialogTarget = ApiKeyDialogTarget.ElevenLabsKey
+        apiKeyDraft = ""
+        apiKeyDialogVisible = true
+    }
+
+    fun openElevenLabsVoiceIdDialog() {
+        apiKeyDialogTarget = ApiKeyDialogTarget.ElevenLabsVoiceId
+        apiKeyDraft = ""
+        apiKeyDialogVisible = true
+    }
+
+    fun openElevenLabsModelIdDialog() {
+        apiKeyDialogTarget = ApiKeyDialogTarget.ElevenLabsModelId
+        apiKeyDraft = ApiKeyManager.DEFAULT_ELEVENLABS_MODEL_ID
+        apiKeyDialogVisible = true
+    }
+
     fun closeApiKeyDialog() {
         apiKeyDialogVisible = false
         apiKeyDraft = ""
@@ -1140,6 +1422,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 ApiKeyDialogTarget.Tavily -> apiKeyManager.replaceTavilyKey(apiKeyDraft)
                 ApiKeyDialogTarget.Rule34UserId -> apiKeyManager.replaceRule34UserId(apiKeyDraft)
                 ApiKeyDialogTarget.Rule34ApiKey -> apiKeyManager.replaceRule34ApiKey(apiKeyDraft)
+                ApiKeyDialogTarget.ElevenLabsKey -> apiKeyManager.replaceElevenLabsKey(apiKeyDraft)
+                ApiKeyDialogTarget.ElevenLabsVoiceId -> apiKeyManager.replaceElevenLabsVoiceId(apiKeyDraft)
+                ApiKeyDialogTarget.ElevenLabsModelId -> apiKeyManager.replaceElevenLabsModelId(apiKeyDraft)
             }
             apiKeyDialogVisible = false
             apiKeyDraft = ""
@@ -1172,6 +1457,27 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun clearRule34ApiKey() {
         viewModelScope.launch {
             apiKeyManager.clearRule34ApiKey()
+            chatError = null
+        }
+    }
+
+    fun clearElevenLabsApiKey() {
+        viewModelScope.launch {
+            apiKeyManager.clearElevenLabsKey()
+            chatError = null
+        }
+    }
+
+    fun clearElevenLabsVoiceId() {
+        viewModelScope.launch {
+            apiKeyManager.clearElevenLabsVoiceId()
+            chatError = null
+        }
+    }
+
+    fun clearElevenLabsModelId() {
+        viewModelScope.launch {
+            apiKeyManager.clearElevenLabsModelId()
             chatError = null
         }
     }
@@ -1574,6 +1880,42 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }.getOrNull()
     }
 
+    private suspend fun writeTtsAudioFile(cacheId: String, audioBytes: ByteArray): File =
+        withContext(Dispatchers.IO) {
+            val directory = File(getApplication<Application>().filesDir, "tts_cache").apply { mkdirs() }
+            File(directory, "$cacheId.mp3").apply {
+                writeBytes(audioBytes)
+            }
+        }
+
+    private fun playTtsAudio(file: File, messageId: String) {
+        stopTtsPlayback()
+        runCatching {
+            mediaPlayer = MediaPlayer().apply {
+                setDataSource(file.absolutePath)
+                setOnCompletionListener { player ->
+                    player.release()
+                    if (mediaPlayer === player) mediaPlayer = null
+                    if (ttsPlaybackMessageId == messageId) ttsPlaybackMessageId = null
+                }
+                setOnErrorListener { player, _, _ ->
+                    player.release()
+                    if (mediaPlayer === player) mediaPlayer = null
+                    if (ttsPlaybackMessageId == messageId) ttsPlaybackMessageId = null
+                    chatError = "Could not play speech."
+                    true
+                }
+                prepare()
+                start()
+            }
+            ttsPlaybackMessageId = messageId
+        }.onFailure { throwable ->
+            mediaPlayer = null
+            ttsPlaybackMessageId = null
+            chatError = throwable.message?.take(160) ?: "Could not play speech."
+        }
+    }
+
     private fun copyAttachmentIntoAppStorage(uri: Uri): Uri? {
         return runCatching {
             val app = getApplication<Application>()
@@ -1868,6 +2210,49 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             raw.isNotBlank() -> raw.take(160)
             else -> "Request failed. Retry in a moment."
         }
+    }
+
+    override fun onCleared() {
+        stopTtsPlayback()
+        super.onCleared()
+    }
+}
+
+private const val TTS_PROVIDER_ELEVENLABS = "elevenlabs"
+
+private fun compactLabel(value: String): String {
+    val trimmed = value.trim()
+    return if (trimmed.length <= 18) {
+        trimmed
+    } else {
+        "${trimmed.take(8)}...${trimmed.takeLast(6)}"
+    }
+}
+
+private fun sha256(value: String): String {
+    return MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+}
+
+private fun cleanSpeakableText(raw: String): String {
+    return raw
+        .replace(Regex("(?s)```.*?```"), " ")
+        .replace(Regex("(?s)/[^/]+/"), " ")
+        .replace(Regex("(?s)\\([^)]*\\)"), " ")
+        .replace(Regex("(?s)（[^）]*）"), " ")
+        .replace(Regex("^\\s*[\\p{L}\\p{N}_ .'-]{1,32}\\s*[:：]\\s*", RegexOption.MULTILINE), "")
+        .replace(Regex("[*_`~>#]+"), "")
+        .lines()
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .joinToString("\n")
+        .trim()
+}
+
+private fun String.containsJapanese(): Boolean {
+    return any { character ->
+        character in '\u3040'..'\u30ff' || character in '\u3400'..'\u9fff'
     }
 }
 
