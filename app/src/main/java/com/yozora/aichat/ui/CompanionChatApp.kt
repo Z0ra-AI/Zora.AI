@@ -208,7 +208,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
 
-private const val APP_VERSION_NAME = "2.1.0"
+private const val APP_VERSION_NAME = "2.1.1"
 
 private enum class DrawerSection {
     Chats,
@@ -462,6 +462,8 @@ fun CompanionChatApp(
                 elevenLabsApiKeyLabel = viewModel.elevenLabsApiKeyLabel,
                 elevenLabsVoiceIdLabel = viewModel.elevenLabsVoiceIdLabel,
                 elevenLabsModelIdLabel = viewModel.elevenLabsModelIdLabel,
+                summarizerUsesSeparateKey = viewModel.summarizerUsesSeparateKey,
+                summarizerApiKeyLabel = viewModel.summarizerApiKeyLabel,
                 quotaUsage = viewModel.quotaUsage,
                 dailyRequestLimit = viewModel.dailyRequestLimit,
                 onBack = viewModel::closePersonaSheet,
@@ -505,6 +507,9 @@ fun CompanionChatApp(
                 onClearElevenLabsVoiceId = viewModel::clearElevenLabsVoiceId,
                 onEditElevenLabsModelId = viewModel::openElevenLabsModelIdDialog,
                 onClearElevenLabsModelId = viewModel::clearElevenLabsModelId,
+                onSummarizerKeyModeChange = viewModel::updateSummarizerUsesSeparateKey,
+                onEditSummarizerKey = viewModel::openSummarizerApiKeyDialog,
+                onClearSummarizerKey = viewModel::clearSummarizerApiKey,
                 onDeleteSession = viewModel::deleteActiveSession,
                 onSave = viewModel::savePersona
             )
@@ -4356,6 +4361,8 @@ private fun PersonaSettingsSheet(
     elevenLabsApiKeyLabel: String?,
     elevenLabsVoiceIdLabel: String?,
     elevenLabsModelIdLabel: String?,
+    summarizerUsesSeparateKey: Boolean,
+    summarizerApiKeyLabel: String?,
     quotaUsage: QuotaUsageState,
     dailyRequestLimit: Int?,
     onBack: () -> Unit,
@@ -4399,6 +4406,9 @@ private fun PersonaSettingsSheet(
     onClearElevenLabsVoiceId: () -> Unit,
     onEditElevenLabsModelId: () -> Unit,
     onClearElevenLabsModelId: () -> Unit,
+    onSummarizerKeyModeChange: (Boolean) -> Unit,
+    onEditSummarizerKey: () -> Unit,
+    onClearSummarizerKey: () -> Unit,
     onDeleteSession: () -> Unit,
     onSave: () -> Unit
 ) {
@@ -4584,6 +4594,8 @@ private fun PersonaSettingsSheet(
                         elevenLabsApiKeyLabel = elevenLabsApiKeyLabel,
                         elevenLabsVoiceIdLabel = elevenLabsVoiceIdLabel,
                         elevenLabsModelIdLabel = elevenLabsModelIdLabel,
+                        summarizerUsesSeparateKey = summarizerUsesSeparateKey,
+                        summarizerApiKeyLabel = summarizerApiKeyLabel,
                         quotaUsage = quotaUsage,
                         dailyRequestLimit = dailyRequestLimit,
                         onToggle = onToggleMore,
@@ -4607,7 +4619,10 @@ private fun PersonaSettingsSheet(
                         onEditElevenLabsVoiceId = onEditElevenLabsVoiceId,
                         onClearElevenLabsVoiceId = onClearElevenLabsVoiceId,
                         onEditElevenLabsModelId = onEditElevenLabsModelId,
-                        onClearElevenLabsModelId = onClearElevenLabsModelId
+                        onClearElevenLabsModelId = onClearElevenLabsModelId,
+                        onSummarizerKeyModeChange = onSummarizerKeyModeChange,
+                        onEditSummarizerKey = onEditSummarizerKey,
+                        onClearSummarizerKey = onClearSummarizerKey
                     )
                 }
             }
@@ -5442,6 +5457,8 @@ private fun MoreOptions(
     elevenLabsApiKeyLabel: String?,
     elevenLabsVoiceIdLabel: String?,
     elevenLabsModelIdLabel: String?,
+    summarizerUsesSeparateKey: Boolean,
+    summarizerApiKeyLabel: String?,
     quotaUsage: QuotaUsageState,
     dailyRequestLimit: Int?,
     onToggle: () -> Unit,
@@ -5465,7 +5482,10 @@ private fun MoreOptions(
     onEditElevenLabsVoiceId: () -> Unit,
     onClearElevenLabsVoiceId: () -> Unit,
     onEditElevenLabsModelId: () -> Unit,
-    onClearElevenLabsModelId: () -> Unit
+    onClearElevenLabsModelId: () -> Unit,
+    onSummarizerKeyModeChange: (Boolean) -> Unit,
+    onEditSummarizerKey: () -> Unit,
+    onClearSummarizerKey: () -> Unit
 ) {
     Surface(
         color = AppSurface,
@@ -5549,6 +5569,8 @@ private fun MoreOptions(
                         elevenLabsApiKeyLabel = elevenLabsApiKeyLabel,
                         elevenLabsVoiceIdLabel = elevenLabsVoiceIdLabel,
                         elevenLabsModelIdLabel = elevenLabsModelIdLabel,
+                        summarizerUsesSeparateKey = summarizerUsesSeparateKey,
+                        summarizerApiKeyLabel = summarizerApiKeyLabel,
                         quotaUsage = quotaUsage,
                         dailyRequestLimit = dailyRequestLimit,
                         onEditApiKey = onEditApiKey,
@@ -5564,7 +5586,10 @@ private fun MoreOptions(
                         onEditElevenLabsVoiceId = onEditElevenLabsVoiceId,
                         onClearElevenLabsVoiceId = onClearElevenLabsVoiceId,
                         onEditElevenLabsModelId = onEditElevenLabsModelId,
-                        onClearElevenLabsModelId = onClearElevenLabsModelId
+                        onClearElevenLabsModelId = onClearElevenLabsModelId,
+                        onSummarizerKeyModeChange = onSummarizerKeyModeChange,
+                        onEditSummarizerKey = onEditSummarizerKey,
+                        onClearSummarizerKey = onClearSummarizerKey
                     )
                 }
             }
@@ -5706,6 +5731,8 @@ private fun ApiKeySummary(
     elevenLabsApiKeyLabel: String?,
     elevenLabsVoiceIdLabel: String?,
     elevenLabsModelIdLabel: String?,
+    summarizerUsesSeparateKey: Boolean,
+    summarizerApiKeyLabel: String?,
     quotaUsage: QuotaUsageState,
     dailyRequestLimit: Int?,
     onEditApiKey: () -> Unit,
@@ -5721,7 +5748,10 @@ private fun ApiKeySummary(
     onEditElevenLabsVoiceId: () -> Unit,
     onClearElevenLabsVoiceId: () -> Unit,
     onEditElevenLabsModelId: () -> Unit,
-    onClearElevenLabsModelId: () -> Unit
+    onClearElevenLabsModelId: () -> Unit,
+    onSummarizerKeyModeChange: (Boolean) -> Unit,
+    onEditSummarizerKey: () -> Unit,
+    onClearSummarizerKey: () -> Unit
 ) {
     Text(
         text = "API keys",
@@ -5743,6 +5773,49 @@ private fun ApiKeySummary(
                 onEdit = onEditApiKey,
                 onClear = onClearApiKey
             )
+            Spacer(modifier = Modifier.height(8.dp))
+            Surface(
+                color = AppBackground.copy(alpha = 0.32f),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, AppStroke),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Separate summarizer key",
+                            color = AppTextPrimary,
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                        Text(
+                            text = if (summarizerUsesSeparateKey) {
+                                "Archive calls use their own Gemini key."
+                            } else {
+                                "Archive calls use the saved Google key."
+                            },
+                            color = AppTextSecondary,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Switch(
+                        checked = summarizerUsesSeparateKey,
+                        onCheckedChange = onSummarizerKeyModeChange
+                    )
+                }
+            }
+            if (summarizerUsesSeparateKey) {
+                Spacer(modifier = Modifier.height(8.dp))
+                ApiKeySlot(
+                    label = "Gemini summarizer key",
+                    keyLabel = summarizerApiKeyLabel,
+                    emptyText = "No summarizer key saved",
+                    onEdit = onEditSummarizerKey,
+                    onClear = onClearSummarizerKey
+                )
+            }
             Spacer(modifier = Modifier.height(8.dp))
             ApiKeySlot(
                 label = "Tavily search key",

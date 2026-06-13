@@ -55,6 +55,16 @@ private const val FALLBACK_MASTER_PROMPT = """
 You are a customizable AI companion. Follow the persona instruction prompt for the active session, keep replies immersive and useful, and ask for clarification when the user request is unclear.
 """
 
+private const val SUMMARIZER_MODEL = "gemini-3.1-flash-lite"
+
+private const val SUMMARIZER_SYSTEM_PROMPT = """
+You are a conversation archiver. Compress the following chat log into a dense, structured summary under 250 words. Format it as:
+[USER FACTS]: Key facts, preferences, or details about the user revealed in this log.
+[RELATIONSHIP STATE]: Current dynamic, mood, and established character voice between user and AI.
+[PLOT & SITUATION]: Chronological events and the exact narrative/physical situation at the end of this log.
+Rules: Short phrases only. No filler. Preserve roleplay continuity and character voice.
+"""
+
 class GeminiChatService(
     private val skillRepository: SkillRepository? = null
 ) {
@@ -267,6 +277,90 @@ class GeminiChatService(
         """.trimIndent()
         cleanSpeechPreparation(model.generateContent(prompt).text.orEmpty())
             .ifBlank { cleanedText.trim() }
+    }
+
+    suspend fun summarizeConversation(
+        apiKey: String,
+        chatLog: String,
+        masterPrompt: String?
+    ): Result<GeminiChatReply> = runCatching {
+        withContext(Dispatchers.IO) {
+            val systemPrompt = summarizerSystemPrompt(masterPrompt)
+            val body = JSONObject()
+                .put(
+                    "systemInstruction",
+                    JSONObject().put(
+                        "parts",
+                        JSONArray().put(JSONObject().put("text", systemPrompt))
+                    )
+                )
+                .put(
+                    "contents",
+                    JSONArray().put(
+                        JSONObject()
+                            .put("role", "user")
+                            .put("parts", JSONArray().put(JSONObject().put("text", chatLog)))
+                    )
+                )
+                .put(
+                    "generationConfig",
+                    JSONObject()
+                        .put("temperature", 0.2)
+                        .put("maxOutputTokens", 1024)
+                )
+                .put("safetySettings", geminiRestSafetySettings(SafetyLevel.None))
+
+            val json = postJson(
+                url = "https://generativelanguage.googleapis.com/v1beta/models/$SUMMARIZER_MODEL:generateContent",
+                headers = mapOf("x-goog-api-key" to apiKey),
+                body = body
+            )
+            val candidate = json.optJSONArray("candidates")?.optJSONObject(0)
+                ?: error("No summarizer response candidate returned.")
+            val usage = json.optJSONObject("usageMetadata")
+            GeminiChatReply(
+                text = extractGeminiRestText(candidate).trim(),
+                promptTokenCount = usage?.optInt("promptTokenCount") ?: 0,
+                responseTokenCount = usage?.optInt("candidatesTokenCount") ?: 0,
+                totalTokenCount = usage?.optInt("totalTokenCount") ?: 0
+            )
+        }
+    }
+
+    fun estimateMessageRequestTokens(
+        persona: PersonaEntity,
+        history: List<MessageEntity>,
+        userInput: String,
+        masterPrompt: String?
+    ): Int {
+        return estimateTextPayloadTokens(
+            systemPrompt = finalSystemPrompt(masterPrompt, persona),
+            history = history,
+            userInput = userInput
+        )
+    }
+
+    fun estimateToolPlanRequestTokens(
+        persona: PersonaEntity,
+        history: List<MessageEntity>,
+        userInput: String,
+        enabledTools: Set<String>,
+        masterPrompt: String?
+    ): Int {
+        return estimateTextPayloadTokens(
+            systemPrompt = finalSystemPrompt(masterPrompt, persona) + "\n\n" +
+                toolUseInstruction(enabledTools),
+            history = history,
+            userInput = userInput
+        )
+    }
+
+    fun estimateSummarizerRequestTokens(
+        chatLog: String,
+        masterPrompt: String?
+    ): Int {
+        return ((summarizerSystemPrompt(masterPrompt).length + chatLog.length + 3) / 4)
+            .coerceAtLeast(1)
     }
 
     private suspend fun sendGemini(
@@ -656,6 +750,29 @@ class GeminiChatService(
             baseMasterPrompt.trimIndent(),
             skillRepository?.combinedContent?.takeIf { it.isNotBlank() },
             persona.systemPrompt.trim()
+        ).joinToString("\n\n---\n\n")
+    }
+
+    private fun estimateTextPayloadTokens(
+        systemPrompt: String,
+        history: List<MessageEntity>,
+        userInput: String
+    ): Int {
+        val characterCount = systemPrompt.length +
+            userInput.length +
+            history.sumOf { message -> message.content.length } +
+            (history.size + 2) * 32
+        return ((characterCount + 3) / 4).coerceAtLeast(1)
+    }
+
+    private fun summarizerSystemPrompt(masterPrompt: String?): String {
+        val baseMasterPrompt = masterPrompt
+            ?.takeIf { it.isNotBlank() }
+            ?.trimIndent()
+            ?: FALLBACK_MASTER_PROMPT.trimIndent()
+        return listOf(
+            baseMasterPrompt,
+            SUMMARIZER_SYSTEM_PROMPT.trimIndent()
         ).joinToString("\n\n---\n\n")
     }
 

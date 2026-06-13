@@ -21,6 +21,7 @@ class ApiKeyManager(
     private val elevenLabsApiKey = stringPreferencesKey("elevenlabs_api_key")
     private val elevenLabsVoiceId = stringPreferencesKey("elevenlabs_voice_id")
     private val elevenLabsModelId = stringPreferencesKey("elevenlabs_model_id")
+    private val summarizerApiKey = stringPreferencesKey("summarizer_api_key")
 
     val keys: Flow<List<String>> = dataStore.data.map { preferences ->
         preferences[keysKey]?.toList().orEmpty()
@@ -142,6 +143,10 @@ class ApiKeyManager(
         preferences[elevenLabsModelId]
     }
 
+    val summarizerKey: Flow<String?> = dataStore.data.map { preferences ->
+        preferences[summarizerApiKey]
+    }
+
     suspend fun keyForRule34Api(): String? {
         return dataStore.data.first()[r34ApiKey]
     }
@@ -246,6 +251,27 @@ class ApiKeyManager(
     suspend fun clearElevenLabsModelId() {
         dataStore.edit { preferences ->
             preferences.remove(elevenLabsModelId)
+        }
+    }
+
+    suspend fun keyForSummarizer(): String? {
+        return dataStore.data.first()[summarizerApiKey]
+    }
+
+    suspend fun replaceSummarizerKey(key: String) {
+        val trimmed = key.trim()
+        dataStore.edit { preferences ->
+            if (trimmed.isEmpty()) {
+                preferences.remove(summarizerApiKey)
+            } else {
+                preferences[summarizerApiKey] = trimmed
+            }
+        }
+    }
+
+    suspend fun clearSummarizerKey() {
+        dataStore.edit { preferences ->
+            preferences.remove(summarizerApiKey)
         }
     }
 

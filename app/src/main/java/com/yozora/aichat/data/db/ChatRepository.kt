@@ -52,6 +52,8 @@ class ChatRepository private constructor(
                         storedMembers.forEach { yield(it.personaJson.legacyStoryLore()) }
                     }.firstOrNull { it.isNotBlank() }.orEmpty()
                 }.take(16_000),
+                archivedContext = sessionEntity.archivedContext,
+                archivedMessageIds = sessionEntity.archivedMessageIdsJson.toStringSet(),
                 levelSystemEnabled = sessionEntity.levelSystemEnabled,
                 levelXp = sessionEntity.levelXp.coerceIn(0, 1500),
                 projectId = sessionEntity.projectId,
@@ -77,6 +79,10 @@ class ChatRepository private constructor(
                 responseRounds = session.responseRounds.coerceIn(1, 3),
                 memoryEnabled = session.memoryEnabled,
                 storyLore = session.storyLore.take(16_000),
+                archivedContext = session.archivedContext,
+                archivedMessageIdsJson = JSONArray().apply {
+                    session.archivedMessageIds.forEach(::put)
+                }.toString(),
                 levelSystemEnabled = session.levelSystemEnabled,
                 levelXp = session.levelXp.coerceIn(0, 1500),
                 projectId = session.projectId,
@@ -278,6 +284,17 @@ private fun String.toPersonaUiState(): PersonaUiState {
 
 private fun String.legacyStoryLore(): String {
     return safeJsonObject(this).optString("storyLore")
+}
+
+private fun String.toStringSet(): Set<String> {
+    return runCatching {
+        val values = JSONArray(this)
+        buildSet {
+            for (index in 0 until values.length()) {
+                values.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+            }
+        }
+    }.getOrDefault(emptySet())
 }
 
 private fun ChatBackground.toJsonString(): String {

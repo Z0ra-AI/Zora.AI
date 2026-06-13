@@ -12,6 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.lifecycle.AndroidViewModel
@@ -30,11 +31,13 @@ import com.yozora.aichat.data.remote.GeminiChatService
 import com.yozora.aichat.data.remote.GeminiLiveCallConfig
 import com.yozora.aichat.data.remote.GeminiLiveCallService
 import com.yozora.aichat.data.remote.GeminiToolCall
+import com.yozora.aichat.data.remote.GeminiToolPlan
 import com.yozora.aichat.data.remote.Rule34ImageRepository
 import com.yozora.aichat.data.remote.ScreenShareForegroundService
 import com.yozora.aichat.data.remote.TavilyRepository
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -50,6 +53,8 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import java.util.UUID
+import kotlin.math.ceil
+import kotlin.math.max
 
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
@@ -227,6 +232,8 @@ data class ChatSession(
     val responseRounds: Int = 1,
     val memoryEnabled: Boolean = true,
     val storyLore: String = "",
+    val archivedContext: String = "",
+    val archivedMessageIds: Set<String> = emptySet(),
     val levelSystemEnabled: Boolean = false,
     val levelXp: Int = 0,
     val projectId: String? = null,
@@ -313,8 +320,14 @@ private data class PendingTtsRequest(
     val modelId: String
 )
 
+private data class PendingSummarizationRequest(
+    val sessionId: String,
+    val aggressive: Boolean
+)
+
 private enum class ApiKeyDialogTarget {
     Provider,
+    Summarizer,
     Tavily,
     Rule34UserId,
     Rule34ApiKey,
@@ -341,9 +354,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val appNameChoiceKey = stringPreferencesKey("app_name_choice")
     private val geminiLiveVoiceKey = stringPreferencesKey("gemini_live_voice")
     private val globalMemoryKey = stringPreferencesKey("global_memory_block_v1")
+    private val summarizerSeparateKeyKey = booleanPreferencesKey("summarizer_use_separate_key")
     private var restoringState = false
     private val persistMutex = Mutex()
+    private val tpmTracker = RollingTpmTracker(TPM_LIMIT)
     private val maxAttachedImages = 12
+    private var summarizationJob: Job? = null
+    private var pendingSummarization: PendingSummarizationRequest? = null
+    private var redMutableFloorHeld = false
     private var pendingTtsRequest: PendingTtsRequest? = null
     private var mediaPlayer: MediaPlayer? = null
     private var voiceCallSessionId: String? = null
@@ -395,6 +413,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private set
 
     var elevenLabsModelIdLabel by mutableStateOf(ApiKeyManager.DEFAULT_ELEVENLABS_MODEL_ID)
+        private set
+
+    var summarizerUsesSeparateKey by mutableStateOf(false)
+        private set
+
+    var summarizerApiKeyLabel by mutableStateOf<String?>(null)
         private set
 
     var ttsPreviewState by mutableStateOf<TtsPreviewState?>(null)
@@ -535,6 +559,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val apiKeyDialogTitle: String
         get() = when (apiKeyDialogTarget) {
             ApiKeyDialogTarget.Provider -> "${persona.vendor.label} API key"
+            ApiKeyDialogTarget.Summarizer -> "Gemini summarizer API key"
             ApiKeyDialogTarget.Tavily -> "Tavily API key"
             ApiKeyDialogTarget.Rule34UserId -> "Rule34 User ID"
             ApiKeyDialogTarget.Rule34ApiKey -> "Rule34 API Key"
@@ -577,6 +602,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             settingsDataStore.data.collectLatest { preferences ->
                 globalMemoryBlock = preferences[globalMemoryKey].orEmpty()
+                summarizerUsesSeparateKey = preferences[summarizerSeparateKeyKey] ?: false
             }
         }
         viewModelScope.launch {
@@ -616,6 +642,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             apiKeyManager.elevenLabsModel.collectLatest { modelId ->
                 elevenLabsModelIdLabel = modelId?.takeIf { it.isNotBlank() }
                     ?: ApiKeyManager.DEFAULT_ELEVENLABS_MODEL_ID
+            }
+        }
+        viewModelScope.launch {
+            apiKeyManager.summarizerKey.collectLatest { key ->
+                summarizerApiKeyLabel = key?.let(apiKeyManager::mask)
             }
         }
     }
@@ -706,7 +737,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
             if (enabledTools.isNotEmpty()) {
                 val plan = retryTemporaryUnavailable {
-                    geminiChatService.planToolUse(
+                    planManagedToolUse(
+                        sessionId = sessionId,
                         apiKey = apiKey,
                         vendor = provider,
                         persona = personaEntityForSession(session, sessionId),
@@ -779,7 +811,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             ) ?: content
                         }
                         val finalResult = retryTemporaryUnavailable {
-                            geminiChatService.sendMessage(
+                            sendManagedMessage(
+                                sessionId = sessionId,
                                 apiKey = apiKey,
                                 persona = personaEntityForSession(session, sessionId),
                                 history = history.toEntities(sessionId),
@@ -839,7 +872,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
 
             val result = retryTemporaryUnavailable {
-                geminiChatService.sendMessage(
+                sendManagedMessage(
+                    sessionId = sessionId,
                     apiKey = apiKey,
                     persona = personaEntityForSession(session, sessionId),
                     history = history.toEntities(sessionId),
@@ -965,7 +999,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             totalTurns = turnSpeakers.size
                         )
                         val reply = retryTemporaryUnavailable {
-                            geminiChatService.sendMessage(
+                            sendManagedMessage(
+                                sessionId = sessionId,
                                 apiKey = memberApiKey,
                                 persona = personaEntityForSession(
                                     session = session,
@@ -1006,8 +1041,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         draft = message.content
         attachedImageUris = message.imageUris
         updateActiveSession { current ->
+            val archiveStillValid = current.archivedMessageIds.all { archivedId ->
+                keptMessages.any { it.id == archivedId }
+            }
             current.copy(
                 messages = keptMessages,
+                archivedContext = current.archivedContext.takeIf { archiveStillValid }.orEmpty(),
+                archivedMessageIds = if (archiveStillValid) current.archivedMessageIds else emptySet(),
                 preview = previewFor(keptMessages),
                 updatedAt = currentTime()
             )
@@ -1024,8 +1064,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val message = session.messages[userIndex]
         val keptMessages = session.messages.take(userIndex)
         updateActiveSession { current ->
+            val archiveStillValid = current.archivedMessageIds.all { archivedId ->
+                keptMessages.any { it.id == archivedId }
+            }
             current.copy(
                 messages = keptMessages,
+                archivedContext = current.archivedContext.takeIf { archiveStillValid }.orEmpty(),
+                archivedMessageIds = if (archiveStillValid) current.archivedMessageIds else emptySet(),
                 preview = previewFor(keptMessages),
                 updatedAt = currentTime()
             )
@@ -1397,7 +1442,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 content = content
             )
             val finalResult = retryTemporaryUnavailable {
-                geminiChatService.sendMessage(
+                sendManagedMessage(
+                    sessionId = sessionId,
                     apiKey = apiKey,
                     persona = personaEntityForSession(session, sessionId),
                     history = session.messages.toEntities(sessionId),
@@ -1989,6 +2035,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             persona = copiedPersona,
             members = copiedMembers,
             activeMemberId = copiedActiveId,
+            archivedContext = "",
+            archivedMessageIds = emptySet(),
             preview = "No messages yet",
             updatedAt = currentTime(),
             messages = emptyList()
@@ -2140,6 +2188,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         apiKeyDialogVisible = true
     }
 
+    fun openSummarizerApiKeyDialog() {
+        apiKeyDialogTarget = ApiKeyDialogTarget.Summarizer
+        apiKeyDraft = ""
+        apiKeyDialogVisible = true
+    }
+
     fun openRule34ApiKeyDialog() {
         apiKeyDialogTarget = ApiKeyDialogTarget.Rule34ApiKey
         apiKeyDraft = ""
@@ -2177,6 +2231,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             when (apiKeyDialogTarget) {
                 ApiKeyDialogTarget.Provider -> apiKeyManager.replaceProviderKey(persona.vendor.id, apiKeyDraft)
+                ApiKeyDialogTarget.Summarizer -> apiKeyManager.replaceSummarizerKey(apiKeyDraft)
                 ApiKeyDialogTarget.Tavily -> apiKeyManager.replaceTavilyKey(apiKeyDraft)
                 ApiKeyDialogTarget.Rule34UserId -> apiKeyManager.replaceRule34UserId(apiKeyDraft)
                 ApiKeyDialogTarget.Rule34ApiKey -> apiKeyManager.replaceRule34ApiKey(apiKeyDraft)
@@ -2208,6 +2263,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun clearRule34UserId() {
         viewModelScope.launch {
             apiKeyManager.clearRule34UserId()
+            chatError = null
+        }
+    }
+
+    fun updateSummarizerUsesSeparateKey(value: Boolean) {
+        summarizerUsesSeparateKey = value
+        viewModelScope.launch(Dispatchers.IO) {
+            settingsDataStore.edit { preferences ->
+                preferences[summarizerSeparateKeyKey] = value
+            }
+        }
+    }
+
+    fun clearSummarizerApiKey() {
+        viewModelScope.launch {
+            apiKeyManager.clearSummarizerKey()
             chatError = null
         }
     }
@@ -2570,8 +2641,213 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             memoryBlock = memoryForSession(currentSession),
             projectInstruction = projectInstructionForSession(currentSession),
             storyLore = currentSession.storyLore,
+            archivedContext = currentSession.archivedContext,
             levelInstruction = levelInstructionForSession(currentSession)
         )
+    }
+
+    private suspend fun sendManagedMessage(
+        sessionId: String,
+        apiKey: String,
+        persona: PersonaEntity,
+        history: List<MessageEntity>,
+        userInput: String,
+        vendor: ApiVendor,
+        safetyLevel: SafetyLevel,
+        images: List<Bitmap>,
+        webSearchEnabled: Boolean,
+        masterPrompt: String?
+    ): Result<GeminiChatReply> {
+        val managedHistory = mutableHistoryForSession(sessionId, history)
+        if (vendor == ApiVendor.Google) {
+            val estimatedTokens = geminiChatService.estimateMessageRequestTokens(
+                persona = persona,
+                history = managedHistory,
+                userInput = userInput,
+                masterPrompt = masterPrompt
+            )
+            registerOutgoingGeminiRequest(sessionId, estimatedTokens)
+        }
+        return geminiChatService.sendMessage(
+            apiKey = apiKey,
+            persona = persona,
+            history = managedHistory,
+            userInput = userInput,
+            vendor = vendor,
+            safetyLevel = safetyLevel,
+            images = images,
+            webSearchEnabled = webSearchEnabled,
+            masterPrompt = masterPrompt
+        )
+    }
+
+    private suspend fun planManagedToolUse(
+        sessionId: String,
+        apiKey: String,
+        vendor: ApiVendor,
+        persona: PersonaEntity,
+        history: List<MessageEntity>,
+        userInput: String,
+        safetyLevel: SafetyLevel,
+        images: List<Bitmap>,
+        enabledTools: Set<String>,
+        masterPrompt: String?
+    ): Result<GeminiToolPlan> {
+        val managedHistory = mutableHistoryForSession(sessionId, history)
+        if (vendor == ApiVendor.Google) {
+            val estimatedTokens = geminiChatService.estimateToolPlanRequestTokens(
+                persona = persona,
+                history = managedHistory,
+                userInput = userInput,
+                enabledTools = enabledTools,
+                masterPrompt = masterPrompt
+            )
+            registerOutgoingGeminiRequest(sessionId, estimatedTokens)
+        }
+        return geminiChatService.planToolUse(
+            apiKey = apiKey,
+            vendor = vendor,
+            persona = persona,
+            history = managedHistory,
+            userInput = userInput,
+            safetyLevel = safetyLevel,
+            images = images,
+            enabledTools = enabledTools,
+            masterPrompt = masterPrompt
+        )
+    }
+
+    private fun mutableHistoryForSession(
+        sessionId: String,
+        history: List<MessageEntity>
+    ): List<MessageEntity> {
+        val archivedIds = sessions.firstOrNull { it.id == sessionId }
+            ?.archivedMessageIds
+            .orEmpty()
+        if (archivedIds.isEmpty()) return history
+        return history.filterNot { it.id in archivedIds }
+    }
+
+    private fun registerOutgoingGeminiRequest(
+        sessionId: String,
+        estimatedTokens: Int
+    ) {
+        val currentTokens = tpmTracker.currentTokens()
+        if (currentTokens < TPM_YELLOW_TOKENS) {
+            redMutableFloorHeld = false
+        }
+        val projectedTokens = currentTokens + estimatedTokens
+        val zone = tpmTracker.zoneFor(projectedTokens)
+        if (zone == TpmComfortZone.Red) {
+            redMutableFloorHeld = true
+        }
+        tpmTracker.record(estimatedTokens)
+
+        if (zone != TpmComfortZone.Green || redMutableFloorHeld) {
+            enqueueSummarization(
+                sessionId = sessionId,
+                aggressive = zone == TpmComfortZone.Red || redMutableFloorHeld
+            )
+        }
+    }
+
+    private fun enqueueSummarization(
+        sessionId: String,
+        aggressive: Boolean
+    ) {
+        val request = PendingSummarizationRequest(sessionId, aggressive)
+        if (summarizationJob?.isActive == true) {
+            val pending = pendingSummarization
+            pendingSummarization = when {
+                pending == null -> request
+                pending.sessionId == sessionId ->
+                    pending.copy(aggressive = pending.aggressive || aggressive)
+                aggressive -> request
+                else -> pending
+            }
+            return
+        }
+
+        summarizationJob = viewModelScope.launch {
+            try {
+                summarizeOldContext(request)
+            } finally {
+                summarizationJob = null
+                val next = pendingSummarization
+                pendingSummarization = null
+                if (next != null) {
+                    enqueueSummarization(next.sessionId, next.aggressive)
+                }
+            }
+        }
+    }
+
+    private suspend fun summarizeOldContext(request: PendingSummarizationRequest) {
+        val session = sessions.firstOrNull { it.id == request.sessionId } ?: return
+        val mutableMessages = session.messages.filterNot { message ->
+            message.id in session.archivedMessageIds || message.isImageLoading
+        }
+        if (mutableMessages.size <= 1) return
+
+        val retainedCount = if (request.aggressive) {
+            max(RED_MUTABLE_MESSAGE_FLOOR, ceil(mutableMessages.size * 0.20).toInt())
+        } else {
+            ceil(mutableMessages.size * 0.40).toInt().coerceAtLeast(1)
+        }.coerceAtMost(mutableMessages.size)
+        val messagesToArchive = mutableMessages.dropLast(retainedCount)
+        if (messagesToArchive.isEmpty()) return
+
+        val apiKey = if (summarizerUsesSeparateKey) {
+            apiKeyManager.keyForSummarizer()
+        } else {
+            apiKeyManager.keyForProvider(ApiVendor.Google.id)
+        }?.takeIf { it.isNotBlank() } ?: return
+
+        val chatLog = messagesToArchive.joinToString("\n") { message ->
+            val speaker = when (message.role) {
+                "user" -> "User"
+                "model" -> message.speakerName?.takeIf { it.isNotBlank() } ?: "AI"
+                else -> message.role
+            }
+            val mediaNote = when {
+                message.imageUris.isNotEmpty() -> " [${message.imageUris.size} attached image(s)]"
+                message.remoteImageUrl != null -> " [image]"
+                else -> ""
+            }
+            "$speaker: ${message.content.trim()}$mediaNote".trim()
+        }
+        if (chatLog.isBlank()) return
+
+        tpmTracker.record(
+            geminiChatService.estimateSummarizerRequestTokens(
+                chatLog = chatLog,
+                masterPrompt = masterSystemPrompt
+            )
+        )
+        val reply = geminiChatService.summarizeConversation(
+            apiKey = apiKey,
+            chatLog = chatLog,
+            masterPrompt = masterSystemPrompt
+        ).getOrNull() ?: return
+        val summary = reply.text.trim()
+        if (summary.isBlank()) return
+        recordUsage(reply)
+
+        val currentIndex = sessions.indexOfFirst { it.id == request.sessionId }
+        if (currentIndex < 0) return
+        val currentSession = sessions[currentIndex]
+        val selectedIds = messagesToArchive.mapTo(linkedSetOf()) { it.id }
+        val currentIds = currentSession.messages.mapTo(hashSetOf()) { it.id }
+        if (!currentIds.containsAll(selectedIds)) return
+        if (selectedIds.any { it in currentSession.archivedMessageIds }) return
+
+        sessions[currentIndex] = currentSession.copy(
+            archivedContext = listOf(currentSession.archivedContext.trim(), summary)
+                .filter { it.isNotBlank() }
+                .joinToString("\n\n"),
+            archivedMessageIds = currentSession.archivedMessageIds + selectedIds
+        )
+        persistChatState()
     }
 
     private fun awardTextMessageXp(sessionId: String, originalText: String) {
@@ -2681,7 +2957,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         val result = retryTemporaryUnavailable {
-            geminiChatService.sendMessage(
+            sendManagedMessage(
+                sessionId = sessionId,
                 apiKey = apiKey,
                 persona = personaEntityForSession(
                     session = refreshedSession,
@@ -3000,7 +3277,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     ) ?: content
                 }
                 val finalResult = retryTemporaryUnavailable {
-                    geminiChatService.sendMessage(
+                    sendManagedMessage(
+                        sessionId = sessionId,
                         apiKey = apiKey,
                         persona = personaEntityForSession(session, sessionId),
                         history = history.toEntities(sessionId),
@@ -3502,6 +3780,9 @@ private const val MAX_PROJECT_INSTRUCTION_CHARS = 16_000
 private const val MAX_STORY_LORE_CHARS = 16_000
 private const val MAX_LEVEL_XP = 1_500
 private const val XP_PER_TEXT_MESSAGE = 10
+private const val TPM_LIMIT = 250_000
+private const val TPM_YELLOW_TOKENS = 175_000
+private const val RED_MUTABLE_MESSAGE_FLOOR = 6
 
 private val LEVEL_THRESHOLDS = listOf(
     0,
@@ -3666,9 +3947,12 @@ private fun ChatSession.freshImportCopy(): ChatSession {
     val importedActiveId = memberIdMap[activeMemberId] ?: importedMembers.first().id
     val importedPersona = importedMembers.firstOrNull { it.id == importedActiveId }?.persona
         ?: importedMembers.first().persona
+    val messageIdMap = messages.associate { message ->
+        message.id to UUID.randomUUID().toString()
+    }
     val importedMessages = messages.map { message ->
         message.copy(
-            id = UUID.randomUUID().toString(),
+            id = messageIdMap.getValue(message.id),
             speakerId = message.speakerId?.let { memberIdMap[it] }
         )
     }
@@ -3677,6 +3961,7 @@ private fun ChatSession.freshImportCopy(): ChatSession {
         persona = importedPersona,
         members = importedMembers,
         activeMemberId = importedActiveId,
+        archivedMessageIds = archivedMessageIds.mapNotNullTo(linkedSetOf()) { messageIdMap[it] },
         preview = previewForRestored(importedMessages),
         updatedAt = currentTime(),
         messages = importedMessages
@@ -3747,6 +4032,11 @@ private fun ChatSession.toJson(): JSONObject {
         .put("responseRounds", responseRounds)
         .put("memoryEnabled", memoryEnabled)
         .put("storyLore", storyLore)
+        .put("archivedContext", archivedContext)
+        .put(
+            "archivedMessageIds",
+            JSONArray().apply { archivedMessageIds.forEach(::put) }
+        )
         .put("levelSystemEnabled", levelSystemEnabled)
         .put("levelXp", levelXp.coerceIn(0, MAX_LEVEL_XP))
         .put("projectId", projectId ?: JSONObject.NULL)
@@ -3788,6 +4078,14 @@ private fun JSONObject.toChatSession(): ChatSession {
         ?: restoredMembers.first().id
     val activePersona = restoredMembers.firstOrNull { it.id == activeMemberId }?.persona
         ?: restoredMembers.first().persona
+    val archivedIdsJson = optJSONArray("archivedMessageIds")
+    val archivedIds = buildSet {
+        if (archivedIdsJson != null) {
+            for (index in 0 until archivedIdsJson.length()) {
+                archivedIdsJson.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+            }
+        }
+    }
     val legacyStoryLore = sequence {
         yield(optJSONObject("persona")?.optString("storyLore").orEmpty())
         if (membersJson != null) {
@@ -3814,6 +4112,8 @@ private fun JSONObject.toChatSession(): ChatSession {
         responseRounds = optInt("responseRounds", 1).coerceIn(1, 3),
         memoryEnabled = if (has("memoryEnabled")) optBoolean("memoryEnabled", true) else true,
         storyLore = optString("storyLore").ifBlank { legacyStoryLore }.take(MAX_STORY_LORE_CHARS),
+        archivedContext = optString("archivedContext"),
+        archivedMessageIds = archivedIds,
         levelSystemEnabled = optBoolean("levelSystemEnabled", false),
         levelXp = optInt("levelXp", 0).coerceIn(0, MAX_LEVEL_XP),
         projectId = optNullableString("projectId"),
@@ -4026,6 +4326,7 @@ private fun PersonaUiState.toEntity(
     memoryBlock: String? = null,
     projectInstruction: String? = null,
     storyLore: String? = null,
+    archivedContext: String? = null,
     levelInstruction: String? = null
 ): PersonaEntity {
     val basePrompt = effectiveInstructionPrompt()
@@ -4035,6 +4336,9 @@ private fun PersonaUiState.toEntity(
     }
     if (!storyLore.isNullOrBlank()) {
         promptSections += "Story lore and world rules shared by every AI in this session. Treat this as canonical setting context:\n${storyLore.trim()}"
+    }
+    if (!archivedContext.isNullOrBlank()) {
+        promptSections += "[Archived Context]\n${archivedContext.trim()}\n[End Archived Context]"
     }
     if (!memoryBlock.isNullOrBlank()) {
         promptSections += "Global memory shared by the user across sessions. Treat these as stable user facts/preferences unless the current message corrects them:\n${memoryBlock.trim()}"

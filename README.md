@@ -1,4 +1,4 @@
-# Zora.AI ◈ (v2.1.0)
+# Zora.AI ◈ (v2.1.1)
 Zora.AI is a native Android AI companion built by Phan Chi Vy. 
 
 ## The TL;DR
@@ -39,6 +39,7 @@ Best of all: it's a **bring-your-own-key** model. You run it on your own API key
 * 🎨 **Deep Customization**: Customize app themes, avatars, backgrounds, app name, and launcher icon.
 * ⚙️ **Developer Vault**: Tweak API safety settings, temperature, and thinking effort values.
 * ⏱️ **Quota Monitor**: Built-in local token counter and reset timer.
+* 📚 **Soft TPM Archive**: Preserves long conversations by summarizing older context instead of deleting it when Gemini approaches its 250K TPM limit.
 * 👆 **Message Context Menu**: Long-press any bubble to copy, edit, retry, or text-to-speech.
 
 ---

@@ -29,6 +29,8 @@ data class ChatSessionEntity(
     val responseRounds: Int,
     val memoryEnabled: Boolean = true,
     val storyLore: String = "",
+    val archivedContext: String = "",
+    val archivedMessageIdsJson: String = "[]",
     val levelSystemEnabled: Boolean = false,
     val levelXp: Int = 0,
     val projectId: String? = null,
