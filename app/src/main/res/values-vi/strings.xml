@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App — KHÔNG dịch -->
+    <string name="app_name" translatable="false">Zora.AI</string>
+
+    <!-- === BOTTOM NAV (Roleplay UI) === -->
+    <string name="nav_discover">Khám phá</string>
+    <string name="nav_chats">Trò chuyện</string>
+    <string name="nav_create">Tạo mới</string>
+    <string name="nav_settings">Cài đặt</string>
+
+    <!-- === DISCOVER SCREEN === -->
+    <string name="search_characters">Tìm kiếm nhân vật</string>
+    <string name="tag_all">Tất cả</string>
+    <string name="no_characters_found">Không tìm thấy nhân vật</string>
+
+    <!-- === CHATS SCREEN === -->
+    <string name="active_chats">Đoạn chat</string>
+    <string name="no_active_chats">Chưa có chat nào. Bắt đầu từ Khám phá nhé!</string>
+    <string name="no_messages_yet">Chưa có tin nhắn</string>
+    <string name="default_tagline">Nhân vật nhập vai tùy chỉnh</string>
+
+    <!-- === CREATE SCREEN === -->
+    <string name="create_character_title">Tạo nhân vật</string>
+    <string name="ai_autofill">AI tự điền</string>
+    <string name="character_name_label">Tên nhân vật</string>
+    <string name="character_tagline_label">Mô tả ngắn (vd: Người bạn cùng phòng tinh nghịch)</string>
+    <string name="tags_traits_label">Tags / Đặc điểm</string>
+    <string name="add_tags">Thêm tag</string>
+    <string name="system_prompt_label">System Prompt</string>
+    <string name="system_prompt_placeholder">vd: Bạn là người bạn cùng phòng tinh nghịch...</string>
+    <string name="greeting_label">Tin nhắn chào mở đầu (Tùy chọn)</string>
+    <string name="lorebook_label">Lorebook / Thế giới quan</string>
+    <string name="lorebook_placeholder">Mô tả thế giới và các quy tắc chi phối nó.</string>
+    <string name="lorebook_hint">Bối cảnh chung: lịch sử, quy tắc, địa điểm, phe phái.</string>
+    <string name="create_and_chat">Tạo &amp; Chat</string>
+    <string name="or_import">hoặc nhập từ file</string>
+    <string name="import_session_btn">Nhập phiên (.zorashare)</string>
+    <string name="import_config_btn">Nhập cấu hình nhân vật</string>
+
+    <!-- Auto-fill dialog -->
+    <string name="autofill_dialog_title">AI tự điền</string>
+    <string name="autofill_dialog_desc">Mô tả kịch bản và nhân vật của bạn. AI sẽ tự động điền vào thế giới quan, vai trò, phong cách và giới hạn.</string>
+    <string name="autofill_placeholder">vd: Một thế giới giả tưởng nơi bạn là thương nhân du hành, hoặc mô tả kịch bản của bạn...</string>
+    <string name="btn_generate">Tạo</string>
+
+    <!-- === ROLEPLAY SETTINGS === -->
+    <string name="settings_title">Cài đặt</string>
+    <string name="roleplay_ui_mode">Chế độ Roleplay UI</string>
+    <string name="roleplay_ui_mode_active">Giao diện Roleplay Zora.AI đang bật.</string>
+    <string name="roleplay_ui_mode_inactive">Giao diện chat tiêu chuẩn đang bật.</string>
+    <string name="nsfw_mode">Chế độ NSFW</string>
+    <string name="nsfw_mode_active">System prompt NSFW đang bật.</string>
+    <string name="nsfw_mode_inactive">System prompt SFW đang bật.</string>
+    <string name="open_app_settings">Mở cài đặt ứng dụng</string>
+    <string name="language_label">Ngôn ngữ</string>
+    <string name="lang_english">English</string>
+    <string name="lang_vietnamese">Tiếng Việt</string>
+
+    <!-- === ROLEPLAY ACTION SHEET === -->
+    <string name="action_export_session">Xuất phiên chat</string>
+    <string name="action_clone_config">Sao chép cấu hình</string>
+    <string name="action_delete">Xóa</string>
+
+    <!-- === LEGACY SIDEBAR DRAWER === -->
+    <string name="new_chat">Chat mới</string>
+    <string name="import_session_drawer">Nhập phiên chat</string>
+    <string name="import_config_drawer">Nhập cấu hình nhân vật</string>
+    <string name="drawer_chats">Chat</string>
+    <string name="drawer_projects">Dự án</string>
+    <string name="search_chats">Tìm chat</string>
+    <string name="search_projects">Tìm dự án</string>
+    <string name="section_recents">Gần đây</string>
+    <string name="section_projects">Dự án</string>
+    <string name="new_project">Dự án mới</string>
+    <string name="section_recent_chats">Chat gần đây</string>
+    <string name="add_chat">Thêm chat</string>
+    <string name="project_instruction_label">Hướng dẫn dự án</string>
+    <string name="project_instruction_placeholder">Thêm ngữ cảnh và hướng dẫn chung cho mọi chat trong dự án này.</string>
+
+    <!-- Project edit dialog -->
+    <string name="edit_project_title">Chỉnh sửa dự án</string>
+    <string name="project_name_label">Tên dự án</string>
+    <string name="project_description_label">Mô tả</string>
+    <string name="shared_instruction_label">Hướng dẫn chung</string>
+
+    <!-- === LEGACY APP SETTINGS DIALOG === -->
+    <string name="memory_label">Bộ nhớ</string>
+    <string name="auto_compress_label">Tự nén chat dài</string>
+    <string name="response_speed_label">Tốc độ phản hồi</string>
+    <string name="btn_export">Xuất</string>
+    <string name="btn_import">Nhập</string>
+    <string name="clear_memory_label">Xóa bộ nhớ</string>
+    <string name="about_label">Giới thiệu</string>
+    <string name="level_system_label">Hệ thống cấp độ</string>
+
+    <!-- === PERSONA SETTINGS === -->
+    <string name="persona_settings_title">Cài đặt nhân vật</string>
+    <string name="btn_save">Lưu</string>
+    <string name="tab_context">Nội dung</string>
+    <string name="tab_ui">Giao diện</string>
+    <string name="tab_api_vault">Cài đặt API</string>
+
+    <!-- UI Tab -->
+    <string name="upload_avatar">Tải ảnh đại diện</string>
+    <string name="avatar_hint">JPG, PNG hoặc WebP. Chụm và kéo để cắt.</string>
+    <string name="display_name_label">Tên hiển thị</string>
+    <string name="display_name_hint">Đây là cách AI xuất hiện trong các cuộc trò chuyện.</string>
+    <string name="creator_label">Tác giả</string>
+    <string name="creator_hint">Ai tạo ra nhân vật này? (vd: @Aprilisalie)</string>
+    <string name="creator_placeholder">@Bạn</string>
+    <string name="description_label">Mô tả</string>
+    <string name="description_hint">Mô tả ngắn hiển thị dưới tên nhân vật.</string>
+    <string name="tags_label">Tags</string>
+    <string name="edit_tags">Chỉnh sửa tag</string>
+    <string name="no_tags_set">Chưa có tag nào</string>
+    <string name="background_label">Nền</string>
+
+    <!-- Context Tab -->
+    <string name="instruction_mode_label">Chế độ hướng dẫn</string>
+    <string name="story_lore_label">Thế giới quan</string>
+    <string name="story_lore_hint">Dùng chung cho mọi AI trong phiên: thế giới, quy tắc, địa điểm, phe phái.</string>
+    <string name="story_lore_placeholder">Mô tả thế giới và các quy tắc chi phối nó.</string>
+    <string name="persona_role_label">Vai trò</string>
+    <string name="persona_style_label">Phong cách</string>
+    <string name="persona_limits_label">Giới hạn</string>
+    <string name="system_prompt_advanced_label">System prompt</string>
+
+    <!-- === SESSION ACTION SHEET (Legacy) === -->
+    <string name="action_copy_settings">Sao chép cài đặt</string>
+    <string name="action_clone_session">Nhân bản phiên chat</string>
+    <string name="action_rename">Đổi tên</string>
+    <string name="action_move_to_project">Chuyển vào dự án</string>
+    <string name="action_change_project">Đổi dự án</string>
+    <string name="action_export_config">Xuất cấu hình</string>
+
+    <!-- === DIALOGS === -->
+    <string name="btn_cancel">Hủy</string>
+    <string name="btn_done">Xong</string>
+    <string name="btn_delete">Xóa</string>
+    <string name="rename_session_title">Đổi tên phiên chat</string>
+    <string name="new_name_hint">Tên mới</string>
+    <string name="delete_session_title">Xóa phiên chat</string>
+    <string name="delete_session_confirm">Thao tác này sẽ xóa vĩnh viễn cuộc trò chuyện này. Bạn có chắc không?</string>
+    <string name="delete_project_title">Xóa dự án</string>
+    <string name="add_sessions_title">Thêm chat vào dự án</string>
+
+    <!-- Tag picker dialog -->
+    <string name="select_tags_title">Chọn Tag</string>
+    <string name="search_tags_hint">Tìm tag...</string>
+    <string name="done_count">Xong (%d)</string>
+
+    <!-- Tag category headers -->
+    <string name="tag_cat_genre">Thể loại &amp; Bối cảnh</string>
+    <string name="tag_cat_personality">Tính cách</string>
+    <string name="tag_cat_species">Chủng tộc &amp; Giới tính</string>
+    <string name="tag_cat_relationship">Kịch bản tình cảm</string>
+    <string name="tag_cat_roles">Vai trò &amp; Nghề nghiệp</string>
+    <string name="tag_cat_format">Định dạng &amp; Góc nhìn</string>
+    <string name="tag_cat_explicit">18+ &amp; Hentai</string>
+    <string name="tag_cat_vanilla">Lãng mạn &amp; Ngọt ngào</string>
+
+    <!-- === CHAT SCREEN === -->
+    <string name="your_message">Tin nhắn của bạn</string>
+    <string name="ai_response">Phản hồi AI</string>
+    <string name="action_copy">Sao chép</string>
+    <string name="action_copy_image_link">Sao chép link ảnh</string>
+    <string name="action_edit">Chỉnh sửa</string>
+    <string name="action_retry">Thử lại</string>
+    <string name="action_speak">Đọc to</string>
+    <string name="fetching_image">Đang tải ảnh</string>
+    <string name="voice_input">Nhập giọng nói</string>
+    <string name="btn_send">Gửi</string>
+    <string name="app_settings_label">Cài đặt ứng dụng</string>
+    <string name="close_sessions">Đóng</string>
+
+    <!-- === TOAST / STATUS MESSAGES === -->
+    <string name="toast_saved">Đã lưu: %s</string>
+    <string name="toast_export_failed">Xuất thất bại: %s</string>
+    <string name="toast_import_success">Nhập thành công</string>
+    <string name="toast_import_failed">Nhập thất bại: %s</string>
+    <string name="toast_imported">Đã nhập: %s</string>
+    <string name="error_invalid_file">File không hợp lệ. Chỉ có thể nhập file .zorashare.</string>
+    <string name="error_open_file">Không thể mở file.</string>
+    <string name="error_invalid_export">File này không phải bản xuất hợp lệ của Zora.</string>
+    <string name="relationship_xp_active">Hệ thống cấp độ tình cảm đang bật.</string>
+    <string name="relationship_xp_inactive">Hệ thống cấp độ tình cảm đang tắt.</string>
+</resources>

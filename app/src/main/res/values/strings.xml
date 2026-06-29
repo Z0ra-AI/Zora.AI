@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App -->
+    <string name="app_name" translatable="false">Zora.AI</string>
+
+    <!-- === BOTTOM NAV (Roleplay UI) === -->
+    <string name="nav_discover">Discover</string>
+    <string name="nav_chats">Chats</string>
+    <string name="nav_create">Create</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- === DISCOVER SCREEN === -->
+    <string name="search_characters">Search Characters</string>
+    <string name="tag_all">All Tags</string>
+    <string name="no_characters_found">No characters found</string>
+
+    <!-- === CHATS SCREEN === -->
+    <string name="active_chats">Active Chats</string>
+    <string name="no_active_chats">No active chats. Start one in Discover!</string>
+    <string name="no_messages_yet">No messages yet</string>
+    <string name="default_tagline">Custom roleplay companion</string>
+
+    <!-- === CREATE SCREEN === -->
+    <string name="create_character_title">Create Character</string>
+    <string name="ai_autofill">AI Auto-fill</string>
+    <string name="character_name_label">Character Name</string>
+    <string name="character_tagline_label">Short Tagline (e.g. Teasing roommate)</string>
+    <string name="tags_traits_label">Tags / Traits</string>
+    <string name="add_tags">Add Tags</string>
+    <string name="system_prompt_label">System Personality Prompt</string>
+    <string name="system_prompt_placeholder">e.g. You are a teasing roommate...</string>
+    <string name="greeting_label">Initial Greeting Message (Optional)</string>
+    <string name="lorebook_label">Lorebook / Story Lore</string>
+    <string name="lorebook_placeholder">Describe the world and the rules that govern it.</string>
+    <string name="lorebook_hint">Shared world context: canon, rules, locations, factions.</string>
+    <string name="create_and_chat">Create &amp; Chat</string>
+    <string name="or_import">or import</string>
+    <string name="import_session_btn">Import Session (.zorashare)</string>
+    <string name="import_config_btn">Import Companion Config</string>
+
+    <!-- Auto-fill dialog -->
+    <string name="autofill_dialog_title">Auto-Fill with AI</string>
+    <string name="autofill_dialog_desc">Describe your scenario and characters. Gemini will automatically fill in the story lore, role, style, and limits.</string>
+    <string name="autofill_placeholder">e.g. A fantasy world where you are a traveling merchant, or describe your scenario...</string>
+    <string name="btn_generate">Generate</string>
+
+    <!-- === ROLEPLAY SETTINGS === -->
+    <string name="settings_title">Settings</string>
+    <string name="roleplay_ui_mode">Roleplay UI Mode</string>
+    <string name="roleplay_ui_mode_active">Zora.AI roleplay layout is active.</string>
+    <string name="roleplay_ui_mode_inactive">Standard chat layout is active.</string>
+    <string name="nsfw_mode">NSFW mode</string>
+    <string name="nsfw_mode_active">NSFW system prompt is active.</string>
+    <string name="nsfw_mode_inactive">SFW system prompt is active.</string>
+    <string name="open_app_settings">Open App Settings</string>
+    <string name="language_label">Language</string>
+    <string name="lang_english">English</string>
+    <string name="lang_vietnamese">Tiếng Việt</string>
+
+    <!-- === ROLEPLAY ACTION SHEET === -->
+    <string name="action_export_session">Export session</string>
+    <string name="action_clone_config">Clone config</string>
+    <string name="action_delete">Delete</string>
+
+    <!-- === LEGACY SIDEBAR DRAWER === -->
+    <string name="new_chat">New chat</string>
+    <string name="import_session_drawer">Import Session</string>
+    <string name="import_config_drawer">Import Companion Config</string>
+    <string name="drawer_chats">Chats</string>
+    <string name="drawer_projects">Projects</string>
+    <string name="search_chats">Search chats</string>
+    <string name="search_projects">Search projects</string>
+    <string name="section_recents">Recents</string>
+    <string name="section_projects">Projects</string>
+    <string name="new_project">New project</string>
+    <string name="section_recent_chats">Recent chats</string>
+    <string name="add_chat">Add chat</string>
+    <string name="project_instruction_label">Project instruction</string>
+    <string name="project_instruction_placeholder">Add shared context and instructions for every chat in this project.</string>
+
+    <!-- Project edit dialog -->
+    <string name="edit_project_title">Edit project</string>
+    <string name="project_name_label">Project name</string>
+    <string name="project_description_label">Description</string>
+    <string name="shared_instruction_label">Shared instruction</string>
+
+    <!-- === LEGACY APP SETTINGS DIALOG === -->
+    <string name="memory_label">Memory</string>
+    <string name="auto_compress_label">Auto-compress long chats</string>
+    <string name="response_speed_label">Response speed</string>
+    <string name="btn_export">Export</string>
+    <string name="btn_import">Import</string>
+    <string name="clear_memory_label">Clear memory</string>
+    <string name="about_label">About</string>
+    <string name="level_system_label">Level system</string>
+
+    <!-- === PERSONA SETTINGS === -->
+    <string name="persona_settings_title">Persona Settings</string>
+    <string name="btn_save">Save</string>
+    <string name="tab_context">Context</string>
+    <string name="tab_ui">UI</string>
+    <string name="tab_api_vault">API vault</string>
+
+    <!-- UI Tab -->
+    <string name="upload_avatar">Upload avatar</string>
+    <string name="avatar_hint">JPG, PNG or WebP. Pinch and drag to crop.</string>
+    <string name="display_name_label">Display name</string>
+    <string name="display_name_hint">This is how your AI will appear in chats.</string>
+    <string name="creator_label">Creator</string>
+    <string name="creator_hint">Who made this character? (e.g. @Aprilisalie)</string>
+    <string name="creator_placeholder">@You</string>
+    <string name="description_label">Description</string>
+    <string name="description_hint">Short description shown under the character name.</string>
+    <string name="tags_label">Tags</string>
+    <string name="edit_tags">Edit tags</string>
+    <string name="no_tags_set">No tags set</string>
+    <string name="background_label">Background</string>
+
+    <!-- Context Tab -->
+    <string name="instruction_mode_label">Instruction mode</string>
+    <string name="story_lore_label">Story lore</string>
+    <string name="story_lore_hint">Shared by every AI in this session: its canon, rules, locations, factions, and how the world works.</string>
+    <string name="story_lore_placeholder">Describe the world and the rules that govern it.</string>
+    <string name="persona_role_label">Role</string>
+    <string name="persona_style_label">Style</string>
+    <string name="persona_limits_label">Limits</string>
+    <string name="system_prompt_advanced_label">System prompt</string>
+
+    <!-- === SESSION ACTION SHEET (Legacy) === -->
+    <string name="action_copy_settings">Copy settings only</string>
+    <string name="action_clone_session">Clone session</string>
+    <string name="action_rename">Rename</string>
+    <string name="action_move_to_project">Move to project</string>
+    <string name="action_change_project">Change project</string>
+    <string name="action_export_config">Export config only</string>
+
+    <!-- === DIALOGS === -->
+    <string name="btn_cancel">Cancel</string>
+    <string name="btn_done">Done</string>
+    <string name="btn_delete">Delete</string>
+    <string name="rename_session_title">Rename session</string>
+    <string name="new_name_hint">New name</string>
+    <string name="delete_session_title">Delete session</string>
+    <string name="delete_session_confirm">This will permanently delete this chat. Are you sure?</string>
+    <string name="delete_project_title">Delete project</string>
+    <string name="add_sessions_title">Add sessions to project</string>
+
+    <!-- Tag picker dialog -->
+    <string name="select_tags_title">Select Tags</string>
+    <string name="search_tags_hint">Search tags...</string>
+    <string name="done_count">Done (%d)</string>
+
+    <!-- Tag category headers -->
+    <string name="tag_cat_genre">Genre &amp; Setting</string>
+    <string name="tag_cat_personality">Personality Archetypes</string>
+    <string name="tag_cat_species">Species &amp; Identity</string>
+    <string name="tag_cat_relationship">Relationship Tropes</string>
+    <string name="tag_cat_roles">Roles &amp; Occupations</string>
+    <string name="tag_cat_format">Format &amp; POV</string>
+    <string name="tag_cat_explicit">Explicit &amp; Hentai</string>
+    <string name="tag_cat_vanilla">Vanilla &amp; Romance</string>
+
+    <!-- === CHAT SCREEN === -->
+    <string name="your_message">Your message</string>
+    <string name="ai_response">AI response</string>
+    <string name="action_copy">Copy</string>
+    <string name="action_copy_image_link">Copy image link</string>
+    <string name="action_edit">Edit</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_speak">Speak</string>
+    <string name="fetching_image">Fetching image</string>
+    <string name="voice_input">Voice input</string>
+    <string name="btn_send">Send</string>
+    <string name="app_settings_label">App settings</string>
+    <string name="close_sessions">Close sessions</string>
+
+    <!-- === TOAST / STATUS MESSAGES === -->
+    <string name="toast_saved">Saved: %s</string>
+    <string name="toast_export_failed">Export failed: %s</string>
+    <string name="toast_import_success">Import successful</string>
+    <string name="toast_import_failed">Import failed: %s</string>
+    <string name="toast_imported">Imported: %s</string>
+    <string name="error_invalid_file">Invalid file. You can only import .zorashare files.</string>
+    <string name="error_open_file">Could not open import file.</string>
+    <string name="error_invalid_export">This is not a valid Zora session export.</string>
+    <string name="relationship_xp_active">Relationship XP is active.</string>
+    <string name="relationship_xp_inactive">Relationship XP is inactive.</string>
+
+    <!-- === OTHERS PRESERVED === -->
+    <string name="lorebook_counter">%1$d/16000 - Canon, rules, locations, factions.</string>
+</resources>

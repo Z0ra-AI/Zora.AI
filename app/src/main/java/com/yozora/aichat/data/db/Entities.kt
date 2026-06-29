@@ -31,13 +31,14 @@ data class ChatSessionEntity(
     val storyLore: String = "",
     val archivedContext: String = "",
     val archivedMessageIdsJson: String = "[]",
-    val levelSystemEnabled: Boolean = false,
+    val levelSystemEnabled: Boolean = true,
     val levelXp: Int = 0,
     val projectId: String? = null,
     val backgroundJson: String,
     val preview: String,
     val updatedAt: String,
-    val sortOrder: Int
+    val sortOrder: Int,
+    val draft: String = ""
 )
 
 @Entity(

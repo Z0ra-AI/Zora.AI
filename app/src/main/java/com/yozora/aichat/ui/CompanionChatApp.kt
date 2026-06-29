@@ -2,9 +2,11 @@ package com.yozora.aichat.ui
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Matrix
+import android.content.res.Configuration
 import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -36,6 +38,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
@@ -43,6 +46,8 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -77,6 +82,7 @@ import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.CallEnd
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
@@ -85,6 +91,7 @@ import androidx.compose.material.icons.rounded.DoneAll
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.FileOpen
 import androidx.compose.material.icons.rounded.ImageSearch
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.InsertDriveFile
@@ -99,6 +106,7 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.ScreenShare
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material.icons.rounded.Upload
 import androidx.compose.material.icons.rounded.Videocam
@@ -114,8 +122,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.sp
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -142,9 +154,11 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -158,6 +172,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -210,6 +225,14 @@ import kotlinx.coroutines.yield
 
 private const val APP_VERSION_NAME = "2.1.1"
 
+private fun Context.applyLanguageOverride(languageCode: String) {
+    val locale = Locale.forLanguageTag(if (languageCode == "vi") "vi" else "en")
+    Locale.setDefault(locale)
+    val config = Configuration(resources.configuration)
+    config.setLocales(android.os.LocaleList(locale))
+    resources.updateConfiguration(config, resources.displayMetrics)
+}
+
 private enum class DrawerSection {
     Chats,
     Projects
@@ -229,7 +252,13 @@ fun CompanionChatApp(
     var actionMessage by remember { mutableStateOf<ChatMessage?>(null) }
     var aboutDialogVisible by remember { mutableStateOf(false) }
     val appVersionLabel = "${viewModel.appNameChoice.label} v$APP_VERSION_NAME"
+    var activeRoleplayTab by remember { mutableStateOf(RoleplayTab.Discover) }
+    var activeChatOpen by remember { mutableStateOf(false) }
+    var pendingConfigExportSession by remember { mutableStateOf<ChatSession?>(null) }
     val context = LocalContext.current
+    LaunchedEffect(viewModel.languageCode) {
+        context.applyLanguageOverride(viewModel.languageCode)
+    }
     val clipboardManager = LocalClipboardManager.current
     val voicePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
@@ -260,6 +289,40 @@ fun CompanionChatApp(
     ) { uri ->
         if (uri != null) {
             viewModel.importSessionFromUri(uri)
+        }
+    }
+    val importConfigLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.importConfigFromUri(context, uri)
+        }
+    }
+    val exportConfigFolderLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        val session = pendingConfigExportSession
+        pendingConfigExportSession = null
+        if (uri != null && session != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            }
+            viewModel.setDefaultExportFolder(uri)
+            viewModel.exportConfigOnly(
+                session = session,
+                folderUri = uri,
+                onNeedsFolder = { pendingConfigExportSession = session },
+                onSuccess = { path ->
+                    android.widget.Toast.makeText(context, "Saved: $path", android.widget.Toast.LENGTH_LONG).show()
+                },
+                onFailure = { err ->
+                    android.widget.Toast.makeText(context, "Export failed: $err", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            )
         }
     }
 
@@ -323,48 +386,108 @@ fun CompanionChatApp(
             .fillMaxSize()
             .background(AppBackground)
     ) {
-        ChatScreen(
-            persona = viewModel.persona,
-            groupMembers = viewModel.groupMembers,
-            sessionHeaderName = viewModel.sessionHeaderName,
-            sessionHeaderAvatarUri = viewModel.sessionHeaderAvatarUri,
-            sessionHeaderAvatarScale = viewModel.sessionHeaderAvatarScale,
-            sessionHeaderAvatarOffsetX = viewModel.sessionHeaderAvatarOffsetX,
-            sessionHeaderAvatarOffsetY = viewModel.sessionHeaderAvatarOffsetY,
-            background = viewModel.background,
-            messages = viewModel.messages,
-            draft = viewModel.draft,
-            isOnline = viewModel.activeApiKeyLabel != null,
-            isSending = viewModel.isSending,
-            chatError = viewModel.chatError,
-            attachedImageUris = viewModel.attachedImageUris,
-            webSearchEnabled = viewModel.webSearchEnabled,
-            canUseWebSearch = viewModel.canUseWebSearch,
-            animeImageModeEnabled = viewModel.animeImageModeEnabled,
-            animeImagePreset = viewModel.animeImagePreset,
-            onDraftChange = viewModel::updateDraft,
-            onSend = viewModel::sendDraft,
-            onAttachImages = viewModel::attachImages,
-            onRemoveAttachedImage = viewModel::removeAttachedImage,
-            onWebSearchChange = viewModel::updateWebSearchEnabled,
-            onAnimeImageModeChange = viewModel::updateAnimeImageModeEnabled,
-            onAnimeImagePresetChange = viewModel::updateAnimeImagePreset,
-            onOpenImage = { viewedImageUri = it },
-            onMessageLongPress = { actionMessage = it },
-            onOpenSessions = viewModel::openSessionDrawer,
-            onOpenPersona = viewModel::openPersonaSheet,
-            onOpenVoiceCall = {
-                val granted = ContextCompat.checkSelfPermission(
-                    context,
-                    Manifest.permission.RECORD_AUDIO
-                ) == PackageManager.PERMISSION_GRANTED
-                if (granted) {
-                    viewModel.openVoiceCall()
-                } else {
-                    voicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                }
+        if (viewModel.roleplayUiModeEnabled) {
+            if (activeChatOpen) {
+                ChatScreen(
+                    persona = viewModel.persona,
+                    groupMembers = viewModel.groupMembers,
+                    sessionHeaderName = viewModel.sessionHeaderName,
+                    sessionHeaderAvatarUri = viewModel.sessionHeaderAvatarUri,
+                    sessionHeaderAvatarScale = viewModel.sessionHeaderAvatarScale,
+                    sessionHeaderAvatarOffsetX = viewModel.sessionHeaderAvatarOffsetX,
+                    sessionHeaderAvatarOffsetY = viewModel.sessionHeaderAvatarOffsetY,
+                    background = viewModel.background,
+                    messages = viewModel.messages,
+                    draft = viewModel.draft,
+                    isOnline = viewModel.activeApiKeyLabel != null,
+                    isSending = viewModel.isSending,
+                    chatError = viewModel.chatError,
+                    attachedImageUris = viewModel.attachedImageUris,
+                    webSearchEnabled = viewModel.webSearchEnabled,
+                    canUseWebSearch = viewModel.canUseWebSearch,
+                    animeImageModeEnabled = viewModel.animeImageModeEnabled,
+                    animeImagePreset = viewModel.animeImagePreset,
+                    onDraftChange = viewModel::updateDraft,
+                    onSend = viewModel::sendDraft,
+                    onAttachImages = viewModel::attachImages,
+                    onRemoveAttachedImage = viewModel::removeAttachedImage,
+                    onWebSearchChange = viewModel::updateWebSearchEnabled,
+                    onAnimeImageModeChange = viewModel::updateAnimeImageModeEnabled,
+                    onAnimeImagePresetChange = viewModel::updateAnimeImagePreset,
+                    onOpenImage = { viewedImageUri = it },
+                    onMessageLongPress = { actionMessage = it },
+                    onOpenSessions = { activeChatOpen = false },
+                    onOpenPersona = viewModel::openPersonaSheet,
+                    onOpenVoiceCall = {
+                        val granted = ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.RECORD_AUDIO
+                        ) == PackageManager.PERMISSION_GRANTED
+                        if (granted) {
+                            viewModel.openVoiceCall()
+                        } else {
+                            voicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    },
+                    onClearChatError = viewModel::clearChatError,
+                    isRoleplayMode = true
+                )
+            } else {
+                RoleplayHubLayout(
+                    viewModel = viewModel,
+                    activeTab = activeRoleplayTab,
+                    onTabChange = { activeRoleplayTab = it },
+                    onOpenChat = { activeChatOpen = true },
+                    onImportSession = { importLauncher.launch(arrayOf("application/octet-stream")) },
+                    onImportConfig = { importConfigLauncher.launch(arrayOf("application/octet-stream")) }
+                )
             }
-        )
+        } else {
+            ChatScreen(
+                persona = viewModel.persona,
+                groupMembers = viewModel.groupMembers,
+                sessionHeaderName = viewModel.sessionHeaderName,
+                sessionHeaderAvatarUri = viewModel.sessionHeaderAvatarUri,
+                sessionHeaderAvatarScale = viewModel.sessionHeaderAvatarScale,
+                sessionHeaderAvatarOffsetX = viewModel.sessionHeaderAvatarOffsetX,
+                sessionHeaderAvatarOffsetY = viewModel.sessionHeaderAvatarOffsetY,
+                background = viewModel.background,
+                messages = viewModel.messages,
+                draft = viewModel.draft,
+                isOnline = viewModel.activeApiKeyLabel != null,
+                isSending = viewModel.isSending,
+                chatError = viewModel.chatError,
+                attachedImageUris = viewModel.attachedImageUris,
+                webSearchEnabled = viewModel.webSearchEnabled,
+                canUseWebSearch = viewModel.canUseWebSearch,
+                animeImageModeEnabled = viewModel.animeImageModeEnabled,
+                animeImagePreset = viewModel.animeImagePreset,
+                onDraftChange = viewModel::updateDraft,
+                onSend = viewModel::sendDraft,
+                onAttachImages = viewModel::attachImages,
+                onRemoveAttachedImage = viewModel::removeAttachedImage,
+                onWebSearchChange = viewModel::updateWebSearchEnabled,
+                onAnimeImageModeChange = viewModel::updateAnimeImageModeEnabled,
+                onAnimeImagePresetChange = viewModel::updateAnimeImagePreset,
+                onOpenImage = { viewedImageUri = it },
+                onMessageLongPress = { actionMessage = it },
+                onOpenSessions = viewModel::openSessionDrawer,
+                onOpenPersona = viewModel::openPersonaSheet,
+                onOpenVoiceCall = {
+                    val granted = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (granted) {
+                        viewModel.openVoiceCall()
+                    } else {
+                        voicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                },
+                onClearChatError = viewModel::clearChatError,
+                isRoleplayMode = false
+            )
+        }
 
         AnimatedVisibility(
             visible = viewModel.sessionDrawerVisible,
@@ -404,14 +527,43 @@ fun CompanionChatApp(
                 onUpdateProjectName = viewModel::updateProjectName,
                 onUpdateProjectDescription = viewModel::updateProjectDescription,
                 onUpdateProjectInstruction = viewModel::updateProjectInstruction,
+                onDeleteProject = viewModel::deleteProject,
                 onDeleteSession = viewModel::deleteSession,
                 onRenameSession = viewModel::renameSession,
                 onCloneSession = viewModel::cloneSession,
                 onDuplicateSessionSettings = viewModel::duplicateSessionSettings,
-                onImportSession = { importLauncher.launch(arrayOf("application/json", "text/*")) },
+                onImportSession = { importLauncher.launch(arrayOf("application/octet-stream")) },
+                onImportConfig = { importConfigLauncher.launch(arrayOf("application/octet-stream")) },
                 onOpenSettings = viewModel::openAppSettings,
                 onOpenAbout = { aboutDialogVisible = true },
-                onClose = viewModel::closeSessionDrawer
+                onClose = viewModel::closeSessionDrawer,
+                onExportSession = { session ->
+                    viewModel.autoExportSession(
+                        sessionId = session.id,
+                        onSuccess = { path ->
+                            android.widget.Toast.makeText(context, "Saved: $path", android.widget.Toast.LENGTH_LONG).show()
+                        },
+                        onFailure = { err ->
+                            android.widget.Toast.makeText(context, "Export failed: $err", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                },
+                onExportConfigSession = { session ->
+                    viewModel.exportConfigOnly(
+                        session = session,
+                        onNeedsFolder = {
+                            pendingConfigExportSession = session
+                            exportConfigFolderLauncher.launch(null)
+                        },
+                        onSuccess = { path ->
+                            android.widget.Toast.makeText(context, "Saved: $path", android.widget.Toast.LENGTH_LONG).show()
+                        },
+                        onFailure = { err ->
+                            android.widget.Toast.makeText(context, "Export failed: $err", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                },
+                onLongPressSession = {}
             )
         }
 
@@ -475,6 +627,9 @@ fun CompanionChatApp(
                 onMemoryEnabledChange = viewModel::updateMemoryEnabled,
                 onLevelSystemEnabledChange = viewModel::updateLevelSystemEnabled,
                 onNameChange = viewModel::updatePersonaName,
+                onAuthorChange = viewModel::updateAuthor,
+                onTaglineChange = viewModel::updateTagline,
+                onTraitsChange = viewModel::updateTraits,
                 onSessionHeaderNameChange = viewModel::updateSessionHeaderName,
                 onInstructionModeChange = viewModel::updateInstructionMode,
                 onBeginnerRoleChange = viewModel::updateBeginnerRole,
@@ -510,7 +665,9 @@ fun CompanionChatApp(
                 onSummarizerKeyModeChange = viewModel::updateSummarizerUsesSeparateKey,
                 onEditSummarizerKey = viewModel::openSummarizerApiKeyDialog,
                 onClearSummarizerKey = viewModel::clearSummarizerApiKey,
+                onTriggerAutoFill = { viewModel.openAutoFillDialog() },
                 onDeleteSession = viewModel::deleteActiveSession,
+                onShareConfig = { viewModel.shareActiveConfig(context) },
                 onSave = viewModel::savePersona
             )
         }
@@ -533,12 +690,25 @@ fun CompanionChatApp(
             selectedName = viewModel.appNameChoice,
             selectedIcon = viewModel.appIconChoice,
             globalMemoryBlock = viewModel.globalMemoryBlock,
+            nsfwModeEnabled = viewModel.nsfwModeEnabled,
+            roleplayUiModeEnabled = viewModel.roleplayUiModeEnabled,
+            languageCode = viewModel.languageCode,
             onNameChange = viewModel::updateAppName,
             onIconChange = viewModel::updateAppIcon,
             onGlobalMemoryChange = viewModel::updateGlobalMemoryBlock,
+            onNsfwModeChange = viewModel::updateNsfwModeEnabled,
+            onRoleplayUiModeChange = viewModel::updateRoleplayUiModeEnabled,
+            onLanguageChange = viewModel::updateLanguage,
             onDismiss = viewModel::closeAppSettings
         )
     }
+
+    AutoFillPromptDialog(
+        visible = viewModel.autoFillDialogVisible,
+        isGenerating = viewModel.isAutoFilling,
+        onDismiss = { viewModel.closeAutoFillDialog() },
+        onConfirm = { viewModel.autoFillWithAI(it) }
+    )
 
     viewedImageUri?.let { uri ->
         FullscreenImageViewer(
@@ -638,7 +808,9 @@ private fun ChatScreen(
     onMessageLongPress: (ChatMessage) -> Unit,
     onOpenSessions: () -> Unit,
     onOpenPersona: () -> Unit,
-    onOpenVoiceCall: () -> Unit
+    onOpenVoiceCall: () -> Unit,
+    onClearChatError: () -> Unit,
+    isRoleplayMode: Boolean = false
 ) {
     var toolsSheetVisible by remember { mutableStateOf(false) }
     var cameraOutputUri by remember { mutableStateOf<android.net.Uri?>(null) }
@@ -756,7 +928,8 @@ private fun ChatScreen(
                 isOnline = isOnline,
                 onOpenSessions = onOpenSessions,
                 onOpenPersona = onOpenPersona,
-                onOpenVoiceCall = onOpenVoiceCall
+                onOpenVoiceCall = onOpenVoiceCall,
+                isRoleplayMode = isRoleplayMode
             )
             LazyColumn(
                 state = listState,
@@ -796,7 +969,7 @@ private fun ChatScreen(
                 }
             }
             if (chatError != null) {
-                ChatErrorLine(message = chatError)
+                ChatErrorLine(message = chatError, onDismiss = onClearChatError)
             }
             Column(
                 modifier = Modifier
@@ -1685,7 +1858,8 @@ private fun ChatHeader(
     isOnline: Boolean,
     onOpenSessions: () -> Unit,
     onOpenPersona: () -> Unit,
-    onOpenVoiceCall: () -> Unit
+    onOpenVoiceCall: () -> Unit,
+    isRoleplayMode: Boolean = false
 ) {
     Row(
         modifier = Modifier
@@ -1696,8 +1870,8 @@ private fun ChatHeader(
     ) {
         IconButton(onClick = onOpenSessions) {
             Icon(
-                imageVector = Icons.Rounded.Menu,
-                contentDescription = "Sessions",
+                imageVector = if (isRoleplayMode) Icons.AutoMirrored.Rounded.ArrowBack else Icons.Rounded.Menu,
+                contentDescription = if (isRoleplayMode) "Back" else "Sessions",
                 tint = AppAccentSoft
             )
         }
@@ -1773,19 +1947,25 @@ private fun SessionDrawer(
     onUpdateProjectName: (String, String) -> Unit,
     onUpdateProjectDescription: (String, String) -> Unit,
     onUpdateProjectInstruction: (String, String) -> Unit,
+    onDeleteProject: (String) -> Unit,
     onDeleteSession: (String) -> Unit,
     onRenameSession: (String, String) -> Unit,
     onCloneSession: (String) -> Unit,
     onDuplicateSessionSettings: (String) -> Unit,
     onImportSession: () -> Unit,
+    onImportConfig: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenAbout: () -> Unit,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    onExportSession: (ChatSession) -> Unit,
+    onExportConfigSession: (ChatSession) -> Unit,
+    onLongPressSession: (ChatSession) -> Unit
 ) {
     var deleteTarget by remember { mutableStateOf<ChatSession?>(null) }
     var actionTarget by remember { mutableStateOf<ChatSession?>(null) }
     var renameTarget by remember { mutableStateOf<ChatSession?>(null) }
     var renameDraft by remember { mutableStateOf("") }
+    var projectDeleteTarget by remember { mutableStateOf<ProjectUiState?>(null) }
     var projectAssignmentTarget by remember { mutableStateOf<ChatSession?>(null) }
     var addToProjectId by remember { mutableStateOf<String?>(null) }
     var sessionSearch by remember { mutableStateOf("") }
@@ -1864,6 +2044,16 @@ private fun SessionDrawer(
                 onClick = onNewSession
             )
             DrawerActionRow(
+                iconRes = R.drawable.asset_import,
+                label = "Import Session",
+                onClick = onImportSession
+            )
+            DrawerActionRow(
+                iconRes = R.drawable.asset_import,
+                label = "Import Companion Config",
+                onClick = onImportConfig
+            )
+            DrawerActionRow(
                 iconRes = R.drawable.asset_session,
                 label = "Chats",
                 selected = drawerSection == DrawerSection.Chats,
@@ -1900,7 +2090,10 @@ private fun SessionDrawer(
                                 project = session.projectId?.let { id -> projects.firstOrNull { it.id == id } },
                                 selected = session.id == activeSessionId,
                                 onClick = { onSelectSession(session.id) },
-                                onLongPress = { actionTarget = session }
+                                onLongPress = {
+                                    actionTarget = session
+                                    onLongPressSession(session)
+                                }
                             )
                         }
                     }
@@ -1964,6 +2157,7 @@ private fun SessionDrawer(
                             onNameChange = { onUpdateProjectName(selectedProject.id, it) },
                             onDescriptionChange = { onUpdateProjectDescription(selectedProject.id, it) },
                             onInstructionChange = { onUpdateProjectInstruction(selectedProject.id, it) },
+                            onDeleteProject = { projectDeleteTarget = selectedProject },
                             onNewChat = { onNewSessionInProject(selectedProject.id) },
                             onAddExistingChat = { addToProjectId = selectedProject.id },
                             onSelectSession = onSelectSession,
@@ -2025,6 +2219,50 @@ private fun SessionDrawer(
         )
     }
 
+    projectDeleteTarget?.let { project ->
+        val chatCount = sessions.count { it.projectId == project.id }
+        AlertDialog(
+            onDismissRequest = { projectDeleteTarget = null },
+            containerColor = AppSurface,
+            title = {
+                Text(
+                    text = "Delete project?",
+                    color = AppTextPrimary,
+                    style = MaterialTheme.typography.titleMedium
+                )
+            },
+            text = {
+                Text(
+                    text = if (chatCount == 0) {
+                        "This removes ${project.name.ifBlank { "New project" }}."
+                    } else {
+                        "This removes ${project.name.ifBlank { "New project" }} and moves $chatCount chat${if (chatCount == 1) "" else "s"} back to Recents."
+                    },
+                    color = AppTextSecondary,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDeleteProject(project.id)
+                        if (selectedProjectId == project.id) {
+                            selectedProjectId = null
+                        }
+                        projectDeleteTarget = null
+                    }
+                ) {
+                    Text(text = "Delete", color = Color(0xFFFF7E8B))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { projectDeleteTarget = null }) {
+                    Text(text = "Cancel", color = AppAccentSoft)
+                }
+            }
+        )
+    }
+
     actionTarget?.let { session ->
         SessionActionSheet(
             session = session,
@@ -2048,6 +2286,14 @@ private fun SessionDrawer(
             },
             onDelete = {
                 deleteTarget = session
+                actionTarget = null
+            },
+            onExport = {
+                onExportSession(session)
+                actionTarget = null
+            },
+            onExportConfig = {
+                onExportConfigSession(session)
                 actionTarget = null
             }
         )
@@ -2132,7 +2378,9 @@ private fun SessionActionSheet(
     onClone: () -> Unit,
     onRename: () -> Unit,
     onMove: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onExport: () -> Unit,
+    onExportConfig: () -> Unit
 ) {
     Box(
         modifier = Modifier
@@ -2198,6 +2446,16 @@ private fun SessionActionSheet(
                     icon = Icons.Rounded.InsertDriveFile,
                     label = if (session.projectId == null) "Move to project" else "Change project",
                     onClick = onMove
+                )
+                ActionSheetRow(
+                    icon = Icons.Rounded.Upload,
+                    label = "Export session",
+                    onClick = onExport
+                )
+                ActionSheetRow(
+                    icon = Icons.Rounded.Share,
+                    label = "Export config only",
+                    onClick = onExportConfig
                 )
                 ActionSheetRow(
                     icon = Icons.Rounded.DeleteOutline,
@@ -2366,7 +2624,7 @@ private fun AddChatsToProjectSheet(
                         )
                     }
                     TextButton(onClick = onDismiss) {
-                        Text("Done", color = AppAccentSoft)
+                        Text(stringResource(R.string.btn_done), color = AppAccentSoft)
                     }
                 }
                 if (sessions.isEmpty()) {
@@ -2632,7 +2890,7 @@ private fun SuggestionChip(
 }
 
 @Composable
-private fun ChatErrorLine(message: String) {
+private fun ChatErrorLine(message: String, onDismiss: () -> Unit) {
     Text(
         text = message,
         color = Color(0xFFFFA0AA),
@@ -2640,6 +2898,7 @@ private fun ChatErrorLine(message: String) {
         textAlign = TextAlign.Center,
         modifier = Modifier
             .fillMaxWidth()
+            .clickable { onDismiss() }
             .padding(horizontal = 24.dp, vertical = 4.dp)
     )
 }
@@ -3070,6 +3329,7 @@ private fun ProjectDetailPanel(
     onNameChange: (String) -> Unit,
     onDescriptionChange: (String) -> Unit,
     onInstructionChange: (String) -> Unit,
+    onDeleteProject: () -> Unit,
     onNewChat: () -> Unit,
     onAddExistingChat: () -> Unit,
     onSelectSession: (String) -> Unit,
@@ -3097,6 +3357,13 @@ private fun ProjectDetailPanel(
                 style = MaterialTheme.typography.labelLarge,
                 modifier = Modifier.weight(1f)
             )
+            IconButton(onClick = onDeleteProject) {
+                Icon(
+                    imageVector = Icons.Rounded.DeleteOutline,
+                    contentDescription = "Delete project",
+                    tint = Color(0xFFFF7E8B)
+                )
+            }
         }
         Text(
             text = project.name.ifBlank { "New project" },
@@ -3168,7 +3435,7 @@ private fun ProjectDetailPanel(
             ) {
                 Icon(Icons.Rounded.Add, contentDescription = null, tint = Color.White)
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("New chat", color = Color.White)
+                Text(stringResource(R.string.new_chat), color = Color.White)
             }
             Button(
                 onClick = onAddExistingChat,
@@ -3180,7 +3447,7 @@ private fun ProjectDetailPanel(
             ) {
                 Icon(Icons.Rounded.InsertDriveFile, contentDescription = null, tint = AppAccentSoft)
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Add chat", color = AppTextPrimary)
+                Text(stringResource(R.string.add_chat), color = AppTextPrimary)
             }
         }
         SectionHeader("Recent chats")
@@ -3207,7 +3474,7 @@ private fun ProjectDetailPanel(
             onDismissRequest = { editVisible = false },
             containerColor = AppSurface,
             title = {
-                Text("Edit project", color = AppTextPrimary)
+                Text(stringResource(R.string.edit_project_title), color = AppTextPrimary)
             },
             text = {
                 Column(
@@ -3219,14 +3486,14 @@ private fun ProjectDetailPanel(
                     OutlinedTextField(
                         value = project.name,
                         onValueChange = onNameChange,
-                        label = { Text("Project name") },
+                        label = { Text(stringResource(R.string.project_name_label)) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
                         value = project.description,
                         onValueChange = onDescriptionChange,
-                        label = { Text("Description") },
+                        label = { Text(stringResource(R.string.project_description_label)) },
                         minLines = 2,
                         maxLines = 4,
                         modifier = Modifier.fillMaxWidth()
@@ -3234,7 +3501,7 @@ private fun ProjectDetailPanel(
                     OutlinedTextField(
                         value = project.instruction,
                         onValueChange = onInstructionChange,
-                        label = { Text("Shared instruction") },
+                        label = { Text(stringResource(R.string.shared_instruction_label)) },
                         minLines = 5,
                         maxLines = 10,
                         modifier = Modifier.fillMaxWidth()
@@ -3243,7 +3510,7 @@ private fun ProjectDetailPanel(
             },
             confirmButton = {
                 TextButton(onClick = { editVisible = false }) {
-                    Text("Done", color = AppAccentSoft)
+                    Text(stringResource(R.string.btn_done), color = AppAccentSoft)
                 }
             }
         )
@@ -4336,6 +4603,7 @@ private fun AnnotatedString.Builder.appendDelimited(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PersonaSettingsSheet(
     persona: PersonaUiState,
@@ -4374,6 +4642,9 @@ private fun PersonaSettingsSheet(
     onMemoryEnabledChange: (Boolean) -> Unit,
     onLevelSystemEnabledChange: (Boolean) -> Unit,
     onNameChange: (String) -> Unit,
+    onAuthorChange: (String) -> Unit,
+    onTaglineChange: (String) -> Unit,
+    onTraitsChange: (List<String>) -> Unit,
     onSessionHeaderNameChange: (String) -> Unit,
     onInstructionModeChange: (InstructionMode) -> Unit,
     onBeginnerRoleChange: (String) -> Unit,
@@ -4409,11 +4680,14 @@ private fun PersonaSettingsSheet(
     onSummarizerKeyModeChange: (Boolean) -> Unit,
     onEditSummarizerKey: () -> Unit,
     onClearSummarizerKey: () -> Unit,
+    onTriggerAutoFill: () -> Unit,
     onDeleteSession: () -> Unit,
+    onShareConfig: () -> Unit,
     onSave: () -> Unit
 ) {
     var instructionPromptExpanded by remember { mutableStateOf(true) }
     var selectedSection by remember { mutableStateOf(PersonaSettingsSection.Context) }
+    var showTagPicker by remember { mutableStateOf(false) }
     val imagePicker = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
         onResult = onAvatarChange
@@ -4498,7 +4772,8 @@ private fun PersonaSettingsSheet(
                         onBeginnerStyleChange = onBeginnerStyleChange,
                         onBeginnerLimitsChange = onBeginnerLimitsChange,
                         onStoryLoreChange = onStoryLoreChange,
-                        onAdvancedPromptChange = onPromptChange
+                        onAdvancedPromptChange = onPromptChange,
+                        onTriggerAutoFill = onTriggerAutoFill
                     )
 
                     SessionMemoryToggle(
@@ -4573,6 +4848,63 @@ private fun PersonaSettingsSheet(
                         singleLine = true
                     )
 
+                    PersonaTextField(
+                        label = "Creator",
+                        value = persona.author,
+                        onValueChange = onAuthorChange,
+                        helper = "Who made this character? (e.g. @Aprilisalie)",
+                        placeholder = "@You",
+                        counter = "${persona.author.length}/32",
+                        singleLine = true
+                    )
+
+                    PersonaTextField(
+                        label = "Description",
+                        value = persona.tagline,
+                        onValueChange = onTaglineChange,
+                        helper = "Short description shown under the character name in Roleplay UI.",
+                        placeholder = "e.g. Your teasing roommate",
+                        counter = "${persona.tagline.length}/80",
+                        singleLine = true
+                    )
+
+                    Column(modifier = Modifier.padding(bottom = 18.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(stringResource(R.string.tags_label), color = AppTextPrimary, style = MaterialTheme.typography.labelLarge)
+                            TextButton(onClick = { showTagPicker = true }) {
+                                Icon(Icons.Rounded.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(stringResource(R.string.edit_tags))
+                            }
+                        }
+                        if (persona.traits.isNotEmpty()) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                persona.traits.forEach { tag ->
+                                    Surface(
+                                        color = Color(0xFFFF5D8F).copy(alpha = 0.15f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text(
+                                            text = tag,
+                                            color = Color(0xFFFF8FA3),
+                                            fontSize = 12.sp,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        } else {
+                            Text(stringResource(R.string.no_tags_set), color = AppTextMuted, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+
                     BackgroundOptions(
                         selected = background,
                         onBackgroundChange = onBackgroundChange,
@@ -4628,6 +4960,18 @@ private fun PersonaSettingsSheet(
             }
 
             TextButton(
+                onClick = onShareConfig,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 18.dp)
+            ) {
+                Text(
+                    text = "Share Companion Config",
+                    color = Color(0xFF6B8BFF)
+                )
+            }
+
+            TextButton(
                 onClick = onDeleteSession,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -4640,6 +4984,16 @@ private fun PersonaSettingsSheet(
             }
         }
     }
+
+    TagPickerDialog(
+        visible = showTagPicker,
+        selectedTags = persona.traits,
+        onDismiss = { showTagPicker = false },
+        onConfirm = { tags ->
+            onTraitsChange(tags)
+            showTagPicker = false
+        }
+    )
 }
 
 @Composable
@@ -5090,6 +5444,65 @@ private fun PersonaTextField(
 }
 
 @Composable
+private fun AutoFillPromptDialog(
+    visible: Boolean,
+    isGenerating: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    if (!visible) return
+    var promptText by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = { if (!isGenerating) onDismiss() },
+        title = { Text(stringResource(R.string.autofill_dialog_title)) },
+        text = {
+            Column {
+                Text(
+                    text = "Describe your scenario and characters. Gemini will automatically fill in the story lore, role, style, and limits.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+                if (isGenerating) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(100.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = AppAccent)
+                    }
+                } else {
+                    OutlinedTextField(
+                        value = promptText,
+                        onValueChange = { promptText = it },
+                        placeholder = { Text(stringResource(R.string.autofill_placeholder)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 3
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(promptText) },
+                enabled = !isGenerating && promptText.isNotBlank()
+            ) {
+                Text(stringResource(R.string.btn_generate), color = AppAccent)
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !isGenerating
+            ) {
+                Text(stringResource(R.string.btn_cancel))
+            }
+        }
+    )
+}
+
+@Composable
 private fun InstructionSection(
     persona: PersonaUiState,
     storyLore: String,
@@ -5100,15 +5513,34 @@ private fun InstructionSection(
     onBeginnerStyleChange: (String) -> Unit,
     onBeginnerLimitsChange: (String) -> Unit,
     onStoryLoreChange: (String) -> Unit,
-    onAdvancedPromptChange: (String) -> Unit
+    onAdvancedPromptChange: (String) -> Unit,
+    onTriggerAutoFill: () -> Unit
 ) {
     Column(modifier = Modifier.padding(bottom = 18.dp)) {
-        Text(
-            text = "Instruction mode",
-            color = AppTextPrimary,
-            style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier.padding(bottom = 8.dp)
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Instruction mode",
+                color = AppTextPrimary,
+                style = MaterialTheme.typography.labelLarge
+            )
+
+            TextButton(
+                onClick = onTriggerAutoFill,
+                colors = ButtonDefaults.textButtonColors(contentColor = AppAccent)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.AutoAwesome,
+                    contentDescription = "AI Auto-fill",
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(stringResource(R.string.ai_autofill), style = MaterialTheme.typography.labelMedium)
+            }
+        }
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.fillMaxWidth()
@@ -6010,13 +6442,72 @@ private fun formatPacificResetCountdown(): String {
 }
 
 @Composable
+private fun LanguagePickerSection(
+    languageCode: String,
+    onLanguageChange: (String) -> Unit
+) {
+    Surface(
+        color = AppSurface,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, AppStroke),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = stringResource(R.string.language_label),
+                color = AppTextPrimary,
+                style = MaterialTheme.typography.labelLarge
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val isEn = languageCode != "vi"
+                Surface(
+                    color = if (isEn) Color(0xFFFF5D8F) else AppSurface2,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onLanguageChange("en") }
+                ) {
+                    Text(
+                        text = stringResource(R.string.lang_english),
+                        textAlign = TextAlign.Center,
+                        color = if (isEn) Color.White else AppTextSecondary,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+                Surface(
+                    color = if (!isEn) Color(0xFFFF5D8F) else AppSurface2,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onLanguageChange("vi") }
+                ) {
+                    Text(
+                        text = stringResource(R.string.lang_vietnamese),
+                        textAlign = TextAlign.Center,
+                        color = if (!isEn) Color.White else AppTextSecondary,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun AppSettingsDialog(
     selectedName: AppNameChoice,
     selectedIcon: AppIconChoice,
     globalMemoryBlock: String,
+    nsfwModeEnabled: Boolean,
+    roleplayUiModeEnabled: Boolean,
+    languageCode: String,
     onNameChange: (AppNameChoice) -> Unit,
     onIconChange: (AppIconChoice) -> Unit,
     onGlobalMemoryChange: (String) -> Unit,
+    onNsfwModeChange: (Boolean) -> Unit,
+    onRoleplayUiModeChange: (Boolean) -> Unit,
+    onLanguageChange: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
@@ -6036,6 +6527,55 @@ private fun AppSettingsDialog(
                     .heightIn(max = 560.dp)
                     .verticalScroll(rememberScrollState())
             ) {
+                LanguagePickerSection(
+                    languageCode = languageCode,
+                    onLanguageChange = onLanguageChange
+                )
+                Spacer(modifier = Modifier.height(18.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Roleplay UI Mode",
+                            color = AppTextPrimary,
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                        Text(
+                            text = if (roleplayUiModeEnabled) stringResource(R.string.roleplay_ui_mode_active) else stringResource(R.string.roleplay_ui_mode_inactive),
+                            color = AppTextSecondary,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(top = 3.dp)
+                        )
+                    }
+                    Switch(
+                        checked = roleplayUiModeEnabled,
+                        onCheckedChange = onRoleplayUiModeChange
+                    )
+                }
+                Spacer(modifier = Modifier.height(18.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "NSFW mode",
+                            color = AppTextPrimary,
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                        Text(
+                            text = if (nsfwModeEnabled) {
+                                stringResource(R.string.nsfw_mode_active)
+                            } else {
+                                stringResource(R.string.nsfw_mode_inactive)
+                            },
+                            color = AppTextSecondary,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(top = 3.dp)
+                        )
+                    }
+                    Switch(
+                        checked = nsfwModeEnabled,
+                        onCheckedChange = onNsfwModeChange
+                    )
+                }
+                Spacer(modifier = Modifier.height(18.dp))
                 Text(
                     text = "App name",
                     color = AppTextPrimary,
@@ -6514,11 +7054,27 @@ private fun FullscreenImageViewer(
     uri: android.net.Uri,
     onDismiss: () -> Unit
 ) {
+    var scale by remember(uri) { mutableStateOf(1f) }
+    var offsetX by remember(uri) { mutableStateOf(0f) }
+    var offsetY by remember(uri) { mutableStateOf(0f) }
+
+    fun resetZoom() {
+        scale = 1f
+        offsetX = 0f
+        offsetY = 0f
+    }
+
+    BackHandler(onBack = onDismiss)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.94f))
-            .clickable(onClick = onDismiss),
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onDismiss
+            ),
         contentAlignment = Alignment.Center
     ) {
         Image(
@@ -6526,12 +7082,65 @@ private fun FullscreenImageViewer(
             contentDescription = "Full image",
             contentScale = ContentScale.Fit,
             modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight()
+                .fillMaxSize()
                 .padding(16.dp)
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    translationX = offsetX
+                    translationY = offsetY
+                }
+                .pointerInput(uri) {
+                    detectTransformGestures { _, pan, zoom, _ ->
+                        val nextScale = (scale * zoom).coerceIn(1f, 5f)
+                        scale = nextScale
+                        if (nextScale <= 1.01f) {
+                            resetZoom()
+                        } else {
+                            offsetX = (offsetX + pan.x)
+                                .coerceIn(-size.width * nextScale, size.width * nextScale)
+                            offsetY = (offsetY + pan.y)
+                                .coerceIn(-size.height * nextScale, size.height * nextScale)
+                        }
+                    }
+                }
+                .pointerInput(uri) {
+                    detectTapGestures(
+                        onDoubleTap = {
+                            if (scale > 1.01f) {
+                                resetZoom()
+                            } else {
+                                scale = 2f
+                            }
+                        }
+                    )
+                }
+        )
+        IconButton(
+            onClick = onDismiss,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(top = 12.dp, end = 12.dp)
+                .background(Color.Black.copy(alpha = 0.42f), CircleShape)
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Close,
+                contentDescription = "Close image",
+                tint = Color.White
+            )
+        }
+        Text(
+            text = "Pinch or double-tap to zoom",
+            color = Color.White.copy(alpha = 0.74f),
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(top = 22.dp)
         )
         Text(
-            text = "Tap to close",
+            text = if (scale > 1.01f) "Double-tap to reset" else "Use X to close",
             color = Color.White.copy(alpha = 0.72f),
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier
@@ -6767,5 +7376,1332 @@ private fun Avatar(
                     translationY = persona.avatarOffsetY
                 )
         )
+    }
+}
+
+// ==========================================
+// ROLEPLAY HUB UI MODE (DOKICHAT LAYOUT)
+// ==========================================
+
+private enum class RoleplayTab {
+    Discover,
+    Chats,
+    Create,
+    Settings
+}
+
+private data class PresetCharacter(
+    val sessionId: String? = null,
+    val name: String,
+    val author: String,
+    val tagline: String,
+    val greeting: String,
+    val prompt: String,
+    val tags: List<String>,
+    val avatarUri: android.net.Uri? = null
+)
+
+private val PresetCharacters = emptyList<PresetCharacter>()
+
+@Composable
+private fun RoleplayHubLayout(
+    viewModel: ChatViewModel,
+    activeTab: RoleplayTab,
+    onTabChange: (RoleplayTab) -> Unit,
+    onOpenChat: () -> Unit,
+    onImportSession: () -> Unit,
+    onImportConfig: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(AppBackground)
+            .statusBarsPadding()
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+        ) {
+            when (activeTab) {
+                RoleplayTab.Discover -> {
+                    DiscoverScreen(
+                        viewModel = viewModel,
+                        onSelectCharacter = { preset ->
+                            val existing = viewModel.sessions.firstOrNull { it.persona.displayName.equals(preset.name, ignoreCase = true) }
+                            if (existing != null) {
+                                viewModel.selectSession(existing.id)
+                                onOpenChat()
+                            } else {
+                                viewModel.createSessionWithPersona(
+                                    name = preset.name,
+                                    tagline = preset.tagline,
+                                    prompt = preset.prompt,
+                                    tags = preset.tags,
+                                    greeting = preset.greeting
+                                )
+                                onOpenChat()
+                            }
+                        }
+                    )
+                }
+                RoleplayTab.Chats -> {
+                    ChatsScreen(
+                        viewModel = viewModel,
+                        onSelectSession = { sessionId ->
+                            viewModel.selectSession(sessionId)
+                            onOpenChat()
+                        }
+                    )
+                }
+                RoleplayTab.Create -> {
+                    CreateScreen(
+                        viewModel = viewModel,
+                        onCreated = onOpenChat,
+                        onImportSession = onImportSession,
+                        onImportConfig = onImportConfig
+                    )
+                }
+                RoleplayTab.Settings -> {
+                    RoleplaySettingsScreen(viewModel = viewModel)
+                }
+            }
+        }
+        RoleplayBottomBar(activeTab = activeTab, onTabChange = onTabChange)
+    }
+}
+
+@Composable
+private fun RoleplayBottomBar(
+    activeTab: RoleplayTab,
+    onTabChange: (RoleplayTab) -> Unit
+) {
+    val items = listOf(
+        Triple(RoleplayTab.Discover, stringResource(R.string.nav_discover), Icons.Rounded.Public),
+        Triple(RoleplayTab.Chats, stringResource(R.string.nav_chats), Icons.Rounded.ChatBubbleOutline),
+        Triple(RoleplayTab.Create, stringResource(R.string.nav_create), Icons.Rounded.Add),
+        Triple(RoleplayTab.Settings, stringResource(R.string.nav_settings), Icons.Rounded.Settings)
+    )
+
+    Surface(
+        color = AppSurface,
+        border = BorderStroke(1.dp, AppStroke.copy(alpha = 0.6f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(68.dp)
+                .padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.SpaceAround,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            items.forEach { (tab, label, icon) ->
+                val selected = activeTab == tab
+                val tint = if (selected) Color(0xFFFF5D8F) else AppTextSecondary
+
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = { onTabChange(tab) }
+                        )
+                        .padding(vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = label,
+                        tint = tint,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = label,
+                        color = tint,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontSize = 11.sp,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiscoverScreen(
+    viewModel: ChatViewModel,
+    onSelectCharacter: (PresetCharacter) -> Unit
+) {
+    val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    var searchQuery by remember { mutableStateOf("") }
+    var selectedTag by remember { mutableStateOf("All Tags") }
+    var actionTarget by remember { mutableStateOf<ChatSession?>(null) }
+
+    val customCharacters = viewModel.sessions.filter { session ->
+        session.persona.displayName.isNotBlank()
+    }.map { session ->
+        PresetCharacter(
+            sessionId = session.id,
+            name = session.persona.displayName,
+            author = session.persona.author.ifBlank { "@You" },
+            tagline = session.persona.tagline.ifBlank { "Custom character" },
+            greeting = session.preview.takeIf { it != "No messages yet" && it.isNotBlank() } ?: "",
+            prompt = session.persona.instructionPrompt,
+            tags = session.persona.traits,
+            avatarUri = session.persona.avatarUri
+        )
+    }
+
+    val allCharacters = PresetCharacters + customCharacters
+    val tagsList = remember(customCharacters) {
+        val userTags = customCharacters.flatMap { it.tags }.distinct().sorted()
+        listOf("All Tags") + TAG_CATEGORIES.keys + userTags
+    }
+    LaunchedEffect(tagsList) {
+        if (selectedTag !in tagsList) {
+            selectedTag = "All Tags"
+        }
+    }
+
+    val filteredCharacters = allCharacters.filter { char ->
+        val matchesSearch = char.name.contains(searchQuery, ignoreCase = true) ||
+                            char.tagline.contains(searchQuery, ignoreCase = true)
+        val matchesTag = if (selectedTag == "All Tags") {
+            true
+        } else if (selectedTag in TAG_CATEGORIES.keys) {
+            val categoryTags = TAG_CATEGORIES[selectedTag].orEmpty()
+            char.tags.any { it in categoryTags }
+        } else {
+            char.tags.any { it.equals(selectedTag, ignoreCase = true) }
+        }
+        matchesSearch && matchesTag
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(top = 16.dp)
+    ) {
+        // Branding Header
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "Zora.AI",
+                style = TextStyle(
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(Color(0xFF8B5CF6), Color(0xFFFF5D8F))
+                    ),
+                    fontSize = 32.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.SansSerif
+                )
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Search Bar
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            placeholder = { Text(stringResource(R.string.search_characters), color = AppTextMuted) },
+            leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, tint = AppTextSecondary) },
+            textStyle = TextStyle(color = AppTextPrimary),
+            shape = RoundedCornerShape(24.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedContainerColor = AppSurface,
+                unfocusedContainerColor = AppSurface,
+                focusedBorderColor = Color(0xFFFF5D8F),
+                unfocusedBorderColor = AppStroke
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Tags List
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            items(tagsList) { tag ->
+                val selected = selectedTag == tag
+                val chipColor = if (selected) Color(0xFFFF5D8F) else AppSurface
+                val textColor = if (selected) Color.White else AppTextSecondary
+                val borderStroke = if (selected) null else BorderStroke(1.dp, AppStroke)
+
+                Surface(
+                    color = chipColor,
+                    shape = RoundedCornerShape(16.dp),
+                    border = borderStroke,
+                    modifier = Modifier.clickable { selectedTag = tag }
+                ) {
+                    Text(
+                        text = when {
+                            tag == "All Tags" -> stringResource(R.string.tag_all)
+                            tag in TAG_CATEGORIES.keys -> localizedTagCategory(tag)
+                            else -> tag
+                        },
+                        color = textColor,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // 2-Column Grid
+        if (filteredCharacters.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
+                Text(stringResource(R.string.no_characters_found), color = AppTextSecondary)
+            }
+        } else {
+            val chunked = filteredCharacters.chunked(2)
+            LazyColumn(
+                contentPadding = PaddingValues(bottom = 16.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .weight(1f)
+                    .padding(horizontal = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(chunked) { pair ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        val left = pair.getOrNull(0)
+                        val right = pair.getOrNull(1)
+
+                        Box(modifier = Modifier.weight(1f)) {
+                            if (left != null) {
+                                CharacterCard(
+                                    char = left,
+                                    onClick = { onSelectCharacter(left) },
+                                    onLongPress = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        actionTarget = left.sessionId?.let { id ->
+                                            viewModel.sessions.firstOrNull { it.id == id }
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                        Box(modifier = Modifier.weight(1f)) {
+                            if (right != null) {
+                                CharacterCard(
+                                    char = right,
+                                    onClick = { onSelectCharacter(right) },
+                                    onLongPress = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        actionTarget = right.sessionId?.let { id ->
+                                            viewModel.sessions.firstOrNull { it.id == id }
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    actionTarget?.let { session ->
+        RoleplayActionSheet(
+            session = session,
+            onDismiss = { actionTarget = null },
+            onExport = {
+                viewModel.autoExportSession(
+                    sessionId = session.id,
+                    onSuccess = { path ->
+                        android.widget.Toast.makeText(context, "Saved: $path", android.widget.Toast.LENGTH_LONG).show()
+                    },
+                    onFailure = { err ->
+                        android.widget.Toast.makeText(context, "Export failed: $err", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                )
+                actionTarget = null
+            },
+            onCloneConfig = {
+                viewModel.duplicateSessionSettings(session.id)
+                actionTarget = null
+            },
+            onDelete = {
+                viewModel.deleteSession(session.id)
+                actionTarget = null
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun CharacterCard(
+    char: PresetCharacter,
+    onClick: () -> Unit,
+    onLongPress: (() -> Unit)? = null
+) {
+    Surface(
+        color = AppSurface,
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(1.dp, AppStroke.copy(alpha = 0.6f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(250.dp)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongPress
+            )
+    ) {
+        Column {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(140.dp)
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color(0xFFFF5D8F).copy(alpha = 0.15f), Color(0xFF8B5CF6).copy(alpha = 0.15f))
+                        )
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                if (char.avatarUri != null) {
+                    Image(
+                        painter = rememberAsyncImagePainter(char.avatarUri),
+                        contentDescription = "${char.name} avatar",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Text(
+                        text = char.name.take(1).uppercase(),
+                        style = TextStyle(
+                            brush = Brush.horizontalGradient(
+                                colors = listOf(Color(0xFFFF5D8F), Color(0xFF8B5CF6))
+                            ),
+                            fontSize = 58.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    )
+                }
+            }
+
+            Column(
+                modifier = Modifier
+                    .padding(10.dp)
+                    .weight(1f),
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column {
+                    Text(
+                        text = char.name,
+                        color = AppTextPrimary,
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(1.dp))
+                    Text(
+                        text = char.author,
+                        color = AppTextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontSize = 10.sp
+                    )
+                    Spacer(modifier = Modifier.height(3.dp))
+                    Text(
+                        text = char.tagline,
+                        color = Color(0xFFFF8FA3),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    char.tags.take(3).forEach { tag ->
+                        Box(
+                            modifier = Modifier
+                                .background(AppSurface2, RoundedCornerShape(6.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = tag,
+                                color = AppTextSecondary,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontSize = 9.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RoleplayActionSheet(
+    session: ChatSession,
+    onDismiss: () -> Unit,
+    onExport: () -> Unit,
+    onCloneConfig: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.46f))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onDismiss
+            ),
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        Surface(
+            color = AppSurface,
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            border = BorderStroke(1.dp, AppStroke),
+            shadowElevation = 18.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = {}
+                )
+        ) {
+            Column(
+                modifier = Modifier
+                    .navigationBarsPadding()
+                    .padding(horizontal = 18.dp, vertical = 14.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .width(42.dp)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(AppStroke)
+                )
+                Text(
+                    text = session.displayTitle(),
+                    color = AppTextPrimary,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 18.dp, bottom = 10.dp)
+                )
+                ActionSheetRow(
+                    icon = Icons.Rounded.Upload,
+                    label = stringResource(R.string.action_export_session),
+                    onClick = onExport
+                )
+                ActionSheetRow(
+                    icon = Icons.Rounded.ContentCopy,
+                    label = stringResource(R.string.action_clone_config),
+                    onClick = onCloneConfig
+                )
+                ActionSheetRow(
+                    icon = Icons.Rounded.DeleteOutline,
+                    label = stringResource(R.string.action_delete),
+                    onClick = onDelete
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ChatsScreen(
+    viewModel: ChatViewModel,
+    onSelectSession: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    var actionTarget by remember { mutableStateOf<ChatSession?>(null) }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        Text(
+            text = stringResource(R.string.active_chats),
+            style = MaterialTheme.typography.titleLarge,
+            color = AppTextPrimary,
+            modifier = Modifier.padding(bottom = 16.dp)
+        )
+
+        if (viewModel.sessions.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(stringResource(R.string.no_active_chats), color = AppTextSecondary)
+            }
+        } else {
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                items(viewModel.sessions) { session ->
+                    val selected = session.id == viewModel.activeSessionId
+                    Surface(
+                        color = if (selected) AppAccentDim.copy(alpha = 0.6f) else AppSurface,
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, if (selected) AppAccent.copy(alpha = 0.6f) else AppStroke),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .combinedClickable(
+                                onClick = { onSelectSession(session.id) },
+                                onLongClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    actionTarget = session
+                                }
+                            )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(CircleShape)
+                                    .background(Brush.linearGradient(listOf(Color(0xFFFF5D8F), Color(0xFF8B5CF6)))),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (session.persona.avatarUri != null) {
+                                    Image(
+                                        painter = rememberAsyncImagePainter(session.persona.avatarUri),
+                                        contentDescription = "${session.persona.displayName} avatar",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else {
+                                    Text(
+                                        text = session.persona.displayName.take(1).uppercase(),
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 20.sp
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = session.persona.displayName.ifBlank { "New Persona" },
+                                        color = AppTextPrimary,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = session.updatedAt,
+                                        color = AppTextMuted,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = session.persona.tagline.ifBlank { "Teasing companion" },
+                                    color = Color(0xFFFF8FA3),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = session.preview,
+                                    color = AppTextSecondary,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    actionTarget?.let { session ->
+        RoleplayActionSheet(
+            session = session,
+            onDismiss = { actionTarget = null },
+            onExport = {
+                viewModel.autoExportSession(
+                    sessionId = session.id,
+                    onSuccess = { path ->
+                        android.widget.Toast.makeText(context, "Saved: $path", android.widget.Toast.LENGTH_LONG).show()
+                    },
+                    onFailure = { err ->
+                        android.widget.Toast.makeText(context, "Export failed: $err", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                )
+                actionTarget = null
+            },
+            onCloneConfig = {
+                viewModel.duplicateSessionSettings(session.id)
+                actionTarget = null
+            },
+            onDelete = {
+                viewModel.deleteSession(session.id)
+                actionTarget = null
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun CreateScreen(
+    viewModel: ChatViewModel,
+    onCreated: () -> Unit,
+    onImportSession: () -> Unit,
+    onImportConfig: () -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var tagline by remember { mutableStateOf("") }
+    var selectedTags by remember { mutableStateOf(listOf<String>()) }
+    var showTagPicker by remember { mutableStateOf(false) }
+    var showAutoFill by remember { mutableStateOf(false) }
+    var prompt by remember { mutableStateOf("") }
+    var greeting by remember { mutableStateOf("") }
+    var storyLore by remember { mutableStateOf("") }
+    var avatarUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var background by remember { mutableStateOf<ChatBackground>(ChatBackground.DarkMode) }
+
+    val avatarPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+        onResult = { uri -> if (uri != null) avatarUri = uri }
+    )
+    val backgroundPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+        onResult = { uri -> if (uri != null) background = ChatBackground.CustomImage(uri) }
+    )
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = stringResource(R.string.create_character_title),
+                style = MaterialTheme.typography.titleLarge,
+                color = AppTextPrimary
+            )
+            TextButton(
+                onClick = { showAutoFill = true },
+                colors = ButtonDefaults.textButtonColors(contentColor = AppAccent)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.AutoAwesome,
+                    contentDescription = "AI Auto-fill",
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(stringResource(R.string.ai_autofill), style = MaterialTheme.typography.labelMedium)
+            }
+        }
+
+        val previewPersona = remember(avatarUri) {
+            PersonaUiState(avatarUri = avatarUri)
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 16.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Box(contentAlignment = Alignment.BottomEnd) {
+                Box(
+                    modifier = Modifier
+                        .size(100.dp)
+                        .clip(CircleShape)
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(AppAccentSoft.copy(alpha = 0.45f), AppSurface2)
+                            )
+                        )
+                        .border(2.dp, AppAccentSoft, CircleShape)
+                        .padding(3.dp)
+                ) {
+                    Avatar(
+                        persona = previewPersona,
+                        size = 94,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                IconButton(
+                    onClick = { avatarPicker.launch(arrayOf("image/*")) },
+                    modifier = Modifier
+                        .offset(x = 2.dp, y = 2.dp)
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(AppSurface2)
+                        .border(1.dp, AppStroke, CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Upload,
+                        contentDescription = "Upload avatar",
+                        tint = AppAccentSoft,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            label = { Text(stringResource(R.string.character_name_label)) },
+            textStyle = TextStyle(color = AppTextPrimary),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+        )
+
+        OutlinedTextField(
+            value = tagline,
+            onValueChange = { tagline = it },
+            label = { Text(stringResource(R.string.character_tagline_label)) },
+            textStyle = TextStyle(color = AppTextPrimary),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+        )
+
+        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+            Text(stringResource(R.string.tags_traits_label), color = AppTextPrimary, style = MaterialTheme.typography.labelLarge)
+            Spacer(modifier = Modifier.height(8.dp))
+            if (selectedTags.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                ) {
+                    selectedTags.forEach { tag ->
+                        Surface(
+                            color = Color(0xFFFF5D8F).copy(alpha = 0.15f),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, Color(0xFFFF5D8F).copy(alpha = 0.4f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                  Text(tag, color = Color(0xFFFF8FA3), fontSize = 12.sp)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(
+                                    imageVector = Icons.Rounded.Close,
+                                    contentDescription = "Remove tag",
+                                    tint = Color(0xFFFF8FA3),
+                                    modifier = Modifier
+                                        .size(14.dp)
+                                        .clickable { selectedTags = selectedTags - tag }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            Button(
+                onClick = { showTagPicker = true },
+                colors = ButtonDefaults.buttonColors(containerColor = AppSurface),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, AppStroke),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Rounded.Add, contentDescription = null, tint = AppTextSecondary)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(stringResource(R.string.add_tags), color = AppTextSecondary)
+            }
+        }
+
+        OutlinedTextField(
+            value = prompt,
+            onValueChange = { prompt = it },
+            label = { Text(stringResource(R.string.system_prompt_label)) },
+            textStyle = TextStyle(color = AppTextPrimary),
+            shape = RoundedCornerShape(12.dp),
+            minLines = 4,
+            maxLines = 8,
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+        )
+
+        OutlinedTextField(
+            value = greeting,
+            onValueChange = { greeting = it },
+            label = { Text(stringResource(R.string.greeting_label)) },
+            textStyle = TextStyle(color = AppTextPrimary),
+            shape = RoundedCornerShape(12.dp),
+            minLines = 3,
+            maxLines = 6,
+            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
+        )
+
+        OutlinedTextField(
+            value = storyLore,
+            onValueChange = { storyLore = it.take(16000) },
+            label = { Text(stringResource(R.string.lorebook_label)) },
+            textStyle = TextStyle(color = AppTextPrimary),
+            shape = RoundedCornerShape(12.dp),
+            minLines = 4,
+            maxLines = 8,
+            supportingText = {
+                Text(stringResource(R.string.lorebook_counter, storyLore.length), color = AppTextMuted)
+            },
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+        )
+
+        BackgroundOptions(
+            selected = background,
+            onBackgroundChange = { background = it },
+            onPickCustomBackground = { backgroundPicker.launch(arrayOf("image/*")) }
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Button(
+            onClick = {
+                if (name.isNotBlank()) {
+                    viewModel.createSessionWithPersona(
+                        name = name,
+                        tagline = tagline,
+                        prompt = prompt,
+                        tags = selectedTags,
+                        greeting = greeting,
+                        storyLore = storyLore,
+                        avatarUri = avatarUri,
+                        background = background
+                    )
+                    onCreated()
+                }
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5D8F)),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp)
+        ) {
+            Text(stringResource(R.string.create_and_chat), color = Color.White, fontWeight = FontWeight.Bold)
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            HorizontalDivider(modifier = Modifier.weight(1f), color = AppStroke)
+            Text(stringResource(R.string.or_import), color = AppTextMuted, style = MaterialTheme.typography.bodySmall)
+            HorizontalDivider(modifier = Modifier.weight(1f), color = AppStroke)
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        OutlinedButton(
+            onClick = onImportSession,
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, AppStroke),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp)
+        ) {
+            Icon(Icons.Rounded.FileOpen, contentDescription = null, tint = AppAccentSoft)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(stringResource(R.string.import_session_btn), color = AppTextPrimary)
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        OutlinedButton(
+            onClick = onImportConfig,
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, AppStroke),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp)
+        ) {
+            Icon(Icons.Rounded.FileOpen, contentDescription = null, tint = AppAccentSoft)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(stringResource(R.string.import_config_btn), color = AppTextPrimary)
+        }
+    }
+
+    TagPickerDialog(
+        visible = showTagPicker,
+        selectedTags = selectedTags,
+        onDismiss = { showTagPicker = false },
+        onConfirm = { tags ->
+            selectedTags = tags
+            showTagPicker = false
+        }
+    )
+
+    AutoFillPromptDialog(
+        visible = showAutoFill,
+        isGenerating = viewModel.isAutoFilling,
+        onDismiss = { showAutoFill = false },
+        onConfirm = { userPrompt ->
+            viewModel.autoFillWithAIForCreate(userPrompt) { generatedPrompt, generatedLore ->
+                if (generatedPrompt.isNotBlank()) {
+                    prompt = generatedPrompt
+                }
+                if (generatedLore.isNotBlank()) {
+                    storyLore = generatedLore.take(16000)
+                }
+                showAutoFill = false
+            }
+        }
+    )
+}
+
+private val TAG_CATEGORIES = linkedMapOf(
+    "Genre & Setting" to listOf(
+        "Fantasy", "Sci-Fi", "Modern", "Slice-of-Life",
+        "Adventure", "Isekai", "Post-Apocalyptic", "Cyberpunk",
+        "Steampunk", "Medieval", "Historical", "Victorian",
+        "High-School", "College-Life", "Office-Setting", "Supernatural",
+        "Mystery", "Horror", "Thriller", "Dystopian",
+        "Space-Opera", "Military", "Survival", "Mafia/Underworld",
+        "Gothic", "Fairy-Tale", "Apocalypse", "Cyber-Noir",
+        "Urban-Fantasy", "Contemporary", "Historical-Romance", "Dark-Fantasy"
+    ),
+    "Personality Archetypes" to listOf(
+        "Tsundere", "Yandere", "Kuudere", "Dandere",
+        "Dominant", "Submissive", "Teasing", "Stoic",
+        "Shy", "Arrogant", "Protective", "Possessive",
+        "Caring", "Cold", "Mischievous", "Playful",
+        "Sassy", "Gentle", "Rebellious", "Introverted",
+        "Extroverted", "Manipulative", "Loyal", "Obsessive",
+        "Flirty", "Sarcastic", "Aloof", "Affectionate",
+        "Clingy", "Devoted", "Innocent", "Seductive",
+        "Bratty", "Nurturing", "Reserved"
+    ),
+    "Species & Identity" to listOf(
+        "Human", "Elf", "Demon", "Angel",
+        "Vampire", "Werewolf", "Neko/Kemonomimi", "Furry/Anthromorph",
+        "Android/Robot", "Monster", "Alien", "Ghost/Spirit",
+        "Witch/Wizard", "Demi-Human", "Orc", "Dragon",
+        "Male", "Female", "Non-Binary", "Genderfluid",
+        "Futanari", "Succubus", "Incubus", "Hybrid"
+    ),
+    "Relationship Tropes" to listOf(
+        "Enemies-to-Lovers", "Friends-to-Lovers", "Strangers-to-Lovers",
+        "Arranged-Marriage", "Ex-Partner", "Roommate", "Step-Family",
+        "Childhood-Friend", "Secret-Crush", "Forbidden-Love", "Office-Romance",
+        "Fake-Dating", "Slow-Burn", "Love-Triangle", "Fated-Mates",
+        "Mutual-Pining", "Accidental-Meeting", "Rescue-Mission", "Stalker",
+        "Contracts/Agreements", "Marriage-of-Convenience", "Reunion",
+        "One-Night-Stand", "Long-Distance"
+    ),
+    "Roles & Occupations" to listOf(
+        "CEO/Boss", "Student", "Teacher/Professor", "Royalty (Prince/Queen)",
+        "Villain", "Hero", "Knight/Guard", "Butler/Maid", "Detective",
+        "Doctor/Nurse", "Idol/Celebrity", "Bodyguard", "Mafia-Boss",
+        "Gladiator", "Pirate", "Assassin", "Adventurer", "Deity/God",
+        "Priest/Nun", "Barista", "Secretary", "Model", "Athlete",
+        "Artist/Musician"
+    ),
+    "Format & POV" to listOf(
+        "AnyPOV", "MalePOV", "FemalePOV", "Scenario", "RPG-Game",
+        "Interactive-Fiction", "First-Person", "Third-Person",
+        "Long-Form/Novella", "Short-Form", "Chat/Casual", "Lorebook/Utility",
+        "Multi-Character", "Script-Style", "Detailed-Descriptive"
+    ),
+    "Explicit & Hentai" to listOf(
+        "Hentai", "Explicit", "NSFW", "Erotic",
+        "Big-Breasts", "Ahegao", "Creampie", "Mind-Break",
+        "Tentacles", "Futanari", "Monster-Girl", "Yuri",
+        "Yaoi", "Netorare", "NTR", "Reverse-Harem",
+        "Dubcon", "Noncon", "Consensual-Nonconsent", "Aftercare",
+        "Vanilla", "Romantic-Sex", "Slow-Intimacy", "Passionate",
+        "Breeding", "Public", "Size-Difference", "Lactation",
+        "Oviposition", "Corruption", "Hypnosis", "Gangbang",
+        "Cheating", "MILF", "Incest", "Rape",
+        "Pregnant", "Slave", "Inflation", "Golden-Shower",
+        "Chikan", "BDSM", "Femdom", "Orgasm-Denial",
+        "Cum-Inflation", "Impregnation", "Double-Penetration", "Anal",
+        "Blowjob", "Paizuri", "Footjob", "Handjob",
+        "Stockings", "Lingerie", "Uniform", "Maid-Outfit",
+        "Schoolgirl", "Glasses", "Glasses-Adjustment", "Glasses-Push",
+        "Sweat", "Smell", "Armpit", "Hairy",
+        "BBW", "Tomboy", "Trap", "Dark-Skin",
+        "Monster", "Demon-Girl", "Elf-Girl", "Catgirl"
+    ),
+    "Vanilla & Romance" to listOf(
+        "Fluff", "Cuddling", "Kissing", "Hand-Holding",
+        "Date-Night", "Confession", "Domestic-Life", "Gentle-Romance",
+        "Emotional-Intimacy", "Comfort", "Healing", "Sweet",
+        "Wholesome", "First-Time", "Morning-After", "Proposal",
+        "Family-Oriented", "Cozy", "Light-Hearted", "Pure-Love",
+        "Mutual-Masturbation", "Foreplay", "Missionary", "Spooning",
+        "Love-Making", "Affection", "Hugging", "Pillow-Talk"
+    )
+)
+
+@Composable
+private fun localizedTagCategory(category: String): String {
+    return when (category) {
+        "Genre & Setting" -> stringResource(R.string.tag_cat_genre)
+        "Personality Archetypes" -> stringResource(R.string.tag_cat_personality)
+        "Species & Identity" -> stringResource(R.string.tag_cat_species)
+        "Relationship Tropes" -> stringResource(R.string.tag_cat_relationship)
+        "Roles & Occupations" -> stringResource(R.string.tag_cat_roles)
+        "Format & POV" -> stringResource(R.string.tag_cat_format)
+        "Explicit & Hentai" -> stringResource(R.string.tag_cat_explicit)
+        "Vanilla & Romance" -> stringResource(R.string.tag_cat_vanilla)
+        else -> category
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun TagPickerDialog(
+    visible: Boolean,
+    selectedTags: List<String>,
+    onDismiss: () -> Unit,
+    onConfirm: (List<String>) -> Unit
+) {
+    if (!visible) return
+    var draftTags by remember(selectedTags) { mutableStateOf(selectedTags) }
+    var query by remember { mutableStateOf("") }
+    val normalizedQuery = query.trim()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = AppSurface,
+        title = { Text(stringResource(R.string.add_tags), color = AppTextPrimary) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 520.dp)
+            ) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    placeholder = { Text(stringResource(R.string.search_tags_hint), color = AppTextMuted) },
+                    leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, tint = AppTextSecondary) },
+                    singleLine = true,
+                    textStyle = TextStyle(color = AppTextPrimary),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp)
+                )
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    TAG_CATEGORIES.forEach { (category, tags) ->
+                        val filteredTags = if (normalizedQuery.isBlank()) {
+                            tags
+                        } else {
+                            tags.filter { it.contains(normalizedQuery, ignoreCase = true) }
+                        }
+                        if (filteredTags.isNotEmpty()) {
+                            item(key = category) {
+                                Text(
+                                    text = localizedTagCategory(category),
+                                    color = AppTextPrimary,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    modifier = Modifier.padding(bottom = 8.dp)
+                                )
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    filteredTags.forEach { tag ->
+                                        val selected = tag in draftTags
+                                        Surface(
+                                            color = if (selected) Color(0xFFFF5D8F) else AppSurface2,
+                                            shape = RoundedCornerShape(14.dp),
+                                            border = if (selected) null else BorderStroke(1.dp, AppStroke),
+                                            modifier = Modifier.clickable {
+                                                draftTags = if (selected) draftTags - tag else draftTags + tag
+                                            }
+                                        ) {
+                                            Text(
+                                                text = tag,
+                                                color = if (selected) Color.White else AppTextSecondary,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(draftTags.distinct()) }) {
+                Text(stringResource(R.string.btn_done), color = AppAccent)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.btn_cancel), color = AppTextSecondary)
+            }
+        }
+    )
+}
+
+@Composable
+private fun RoleplaySettingsScreen(viewModel: ChatViewModel) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+        Text(
+            text = stringResource(R.string.nav_settings),
+            style = MaterialTheme.typography.titleLarge,
+            color = AppTextPrimary,
+            modifier = Modifier.padding(bottom = 16.dp)
+        )
+
+        LanguagePickerSection(
+            languageCode = viewModel.languageCode,
+            onLanguageChange = viewModel::updateLanguage
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Surface(
+            color = AppSurface,
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, AppStroke),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.roleplay_ui_mode),
+                            color = AppTextPrimary,
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                        Text(
+                            text = if (viewModel.roleplayUiModeEnabled) stringResource(R.string.roleplay_ui_mode_active) else stringResource(R.string.roleplay_ui_mode_inactive),
+                            color = AppTextSecondary,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(top = 3.dp)
+                        )
+                    }
+                    Switch(
+                        checked = viewModel.roleplayUiModeEnabled,
+                        onCheckedChange = { viewModel.updateRoleplayUiModeEnabled(it) }
+                    )
+                }
+            }
+        }
+
+        Surface(
+            color = AppSurface,
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, AppStroke),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.nsfw_mode),
+                            color = AppTextPrimary,
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                        Text(
+                            text = if (viewModel.nsfwModeEnabled) stringResource(R.string.nsfw_mode_active) else stringResource(R.string.nsfw_mode_inactive),
+                            color = AppTextSecondary,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(top = 3.dp)
+                        )
+                    }
+                    Switch(
+                        checked = viewModel.nsfwModeEnabled,
+                        onCheckedChange = { viewModel.updateNsfwModeEnabled(it) }
+                    )
+                }
+            }
+        }
+
+        Surface(
+            color = AppSurface,
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, AppStroke),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Relationship XP",
+                            color = AppTextPrimary,
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                        Text(
+                            text = if (viewModel.levelSystemEnabled) stringResource(R.string.relationship_xp_active) else stringResource(R.string.relationship_xp_inactive),
+                            color = AppTextSecondary,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(top = 3.dp)
+                        )
+                    }
+                    Switch(
+                        checked = viewModel.levelSystemEnabled,
+                        onCheckedChange = { viewModel.updateLevelSystemEnabled(it) }
+                    )
+                }
+            }
+        }
+
+        Button(
+            onClick = { viewModel.openAppSettings() },
+            colors = ButtonDefaults.buttonColors(containerColor = AppAccent),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp)
+        ) {
+            Text(stringResource(R.string.open_app_settings), color = Color.White, fontWeight = FontWeight.Bold)
+        }
     }
 }

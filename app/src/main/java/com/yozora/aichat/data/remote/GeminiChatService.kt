@@ -4,14 +4,17 @@ import android.graphics.Bitmap
 import android.util.Base64
 import com.google.ai.client.generativeai.GenerativeModel
 import com.google.ai.client.generativeai.type.BlockThreshold
+import com.google.ai.client.generativeai.type.FunctionType
 import com.google.ai.client.generativeai.type.HarmCategory
 import com.google.ai.client.generativeai.type.SafetySetting
+import com.google.ai.client.generativeai.type.Schema
 import com.google.ai.client.generativeai.type.generationConfig
 import com.yozora.aichat.data.SkillRepository
 import com.yozora.aichat.data.db.MessageEntity
 import com.yozora.aichat.data.db.PersonaEntity
 import com.yozora.aichat.ui.chat.ApiVendor
 import com.yozora.aichat.ui.chat.SafetyLevel
+import com.yozora.aichat.ui.chat.TokenEstimator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -50,6 +53,13 @@ data class GeminiToolPlan(
         )
     }
 }
+
+data class PersonaAutoFillResult(
+    val storyLore: String,
+    val beginnerRole: String,
+    val beginnerStyle: String,
+    val beginnerLimits: String
+)
 
 private const val FALLBACK_MASTER_PROMPT = """
 You are a customizable AI companion. Follow the persona instruction prompt for the active session, keep replies immersive and useful, and ask for clarification when the user request is unclear.
@@ -248,6 +258,102 @@ class GeminiChatService(
         }
     }
 
+    suspend fun autoFillPersonaFields(
+        apiKey: String,
+        userPrompt: String
+    ): Result<PersonaAutoFillResult> = runCatching {
+        val responseSchema = Schema(
+            type = FunctionType.OBJECT,
+            name = "",
+            description = "",
+            properties = mapOf(
+                "storyLore" to Schema(
+                    type = FunctionType.STRING,
+                    name = "storyLore",
+                    description = "The background lore, world rules, locations, factions, and setting context shared by all characters."
+                ),
+                "beginnerRole" to Schema(
+                    type = FunctionType.STRING,
+                    name = "beginnerRole",
+                    description = "Who this persona is, what they know, and how they relate to the user."
+                ),
+                "beginnerStyle" to Schema(
+                    type = FunctionType.STRING,
+                    name = "beginnerStyle",
+                    description = "Tone, message length, speaking quirks, and roleplay/conversation texture."
+                ),
+                "beginnerLimits" to Schema(
+                    type = FunctionType.STRING,
+                    name = "beginnerLimits",
+                    description = "Boundaries, canon rules, things to avoid, or must-follow details."
+                )
+            ),
+            required = listOf("storyLore", "beginnerRole", "beginnerStyle", "beginnerLimits")
+        )
+
+        val model = GenerativeModel(
+            modelName = "gemini-3.1-flash-lite",
+            apiKey = apiKey,
+            generationConfig = generationConfig {
+                temperature = 0.4f
+                responseMimeType = "application/json"
+                this.responseSchema = responseSchema
+            },
+            safetySettings = safetySettings(SafetyLevel.None)
+        )
+
+        val prompt = """
+            Analyze the following prompt and generate structured data to create a roleplay persona.
+            Ensure each field is highly descriptive, engaging, and directly based on the user's scenario.
+
+            User Prompt: "$userPrompt"
+        """.trimIndent()
+
+        val response = withContext(Dispatchers.IO) {
+            model.generateContent(prompt)
+        }
+
+        // The model may wrap JSON in ``` fences or add stray text; extract the
+        // first {...} block before parsing so a stray character never breaks it.
+        val rawText = response.text.orEmpty().trim()
+        val jsonText = extractFirstJsonObject(rawText)
+            ?: throw Exception("Empty or invalid response from Gemini")
+
+        val json = JSONObject(jsonText)
+        PersonaAutoFillResult(
+            storyLore = json.optString("storyLore").trim(),
+            beginnerRole = json.optString("beginnerRole").trim(),
+            beginnerStyle = json.optString("beginnerStyle").trim(),
+            beginnerLimits = json.optString("beginnerLimits").trim()
+        )
+    }
+
+    private fun extractFirstJsonObject(raw: String): String? {
+        val start = raw.indexOf('{')
+        if (start < 0) return null
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (index in start until raw.length) {
+            val char = raw[index]
+            if (inString) {
+                if (escaped) escaped = false
+                else if (char == '\\') escaped = true
+                else if (char == '"') inString = false
+            } else {
+                when (char) {
+                    '"' -> inString = true
+                    '{' -> depth++
+                    '}' -> {
+                        depth--
+                        if (depth == 0) return raw.substring(start, index + 1)
+                    }
+                }
+            }
+        }
+        return null
+    }
+
     suspend fun prepareJapaneseSpeechText(
         apiKey: String,
         cleanedText: String
@@ -333,9 +439,9 @@ class GeminiChatService(
         userInput: String,
         masterPrompt: String?
     ): Int {
-        return estimateTextPayloadTokens(
+        return TokenEstimator.estimateRequestTokens(
             systemPrompt = finalSystemPrompt(masterPrompt, persona),
-            history = history,
+            historyContents = history.map { it.content },
             userInput = userInput
         )
     }
@@ -347,10 +453,10 @@ class GeminiChatService(
         enabledTools: Set<String>,
         masterPrompt: String?
     ): Int {
-        return estimateTextPayloadTokens(
+        return TokenEstimator.estimateRequestTokens(
             systemPrompt = finalSystemPrompt(masterPrompt, persona) + "\n\n" +
                 toolUseInstruction(enabledTools),
-            history = history,
+            historyContents = history.map { it.content },
             userInput = userInput
         )
     }
@@ -359,8 +465,11 @@ class GeminiChatService(
         chatLog: String,
         masterPrompt: String?
     ): Int {
-        return ((summarizerSystemPrompt(masterPrompt).length + chatLog.length + 3) / 4)
-            .coerceAtLeast(1)
+        return TokenEstimator.estimateRequestTokens(
+            systemPrompt = summarizerSystemPrompt(masterPrompt),
+            historyContents = emptyList(),
+            userInput = chatLog
+        )
     }
 
     private suspend fun sendGemini(
@@ -751,18 +860,6 @@ class GeminiChatService(
             skillRepository?.combinedContent?.takeIf { it.isNotBlank() },
             persona.systemPrompt.trim()
         ).joinToString("\n\n---\n\n")
-    }
-
-    private fun estimateTextPayloadTokens(
-        systemPrompt: String,
-        history: List<MessageEntity>,
-        userInput: String
-    ): Int {
-        val characterCount = systemPrompt.length +
-            userInput.length +
-            history.sumOf { message -> message.content.length } +
-            (history.size + 2) * 32
-        return ((characterCount + 3) / 4).coerceAtLeast(1)
     }
 
     private fun summarizerSystemPrompt(masterPrompt: String?): String {

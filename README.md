@@ -1,4 +1,4 @@
-# Zora.AI ◈ (v2.1.1)
+# Zora.AI ◈ (v2.2.0)
 Zora.AI is a native Android AI companion built by Phan Chi Vy. 
 
 ## The TL;DR
@@ -6,7 +6,7 @@ Zora.AI is a native Android AI companion built by Phan Chi Vy.
 
 I got sick of commercial AI apps locking basic conversations behind subscriptions or lecturing me about "community guidelines" every time a chat got interesting. Zora.AI is the antidote. It is a sandbox of pure creative freedom where adult content, dark roleplay, and extreme fictional scenarios are fully allowed.
 
-I’m a responsible developer, though—don't use this platform to build explosives or recreate 9/11 (っ °Д °;)っ. Otherwise? Write whatever the fuck you want.
+I’m a responsible developer, though—don't use this platform to build weapons, plan crimes, or recreate 9/11 (っ °Д °;)っ. Otherwise? Write whatever the fuck you want.
 
 Best of all: it's a **bring-your-own-key** model. You run it on your own API keys. No middleware, no training on your private chats, and no paying me a single cent.
 
@@ -19,6 +19,30 @@ Best of all: it's a **bring-your-own-key** model. You run it on your own API key
 
 ---
 
+## 🔞 NSFW & Frontier Model Jailbreak
+**WARNING**: Zora.AI features built-in jailbreak configurations for frontier-line models. 
+* **What it does**: Bypasses moralizing filters specifically to unlock NSFW 18+ content, mature storytelling, and unfiltered creative expression.
+* **What it blocks**: The system still enforces strict safety guards against dangerous/sketchy stuff (e.g. weapons, extreme real-world harm, self-harm instructions).
+* **Use at your own risk**: Using these configurations might violate the Terms of Service of your selected API provider. Your API keys could get banned if their automated systems flag them. Don't say I didn't warn you!
+* **Footnote**: To keep this repository clean and safe, the private NSFW-specific system prompts are *not* included or hardcoded in this repo. If you brew or build this app on your own, you'll need to write or supply your own master prompt, otherwise it will fall back to standard SFW behavior.
+
+### Model Risk Ranking (Lowest to Highest Risk of being banned):
+Based on usage testing (no keys were banned during development, but your mileage may vary):
+```text
+Grok 4.3 (Lowest Risk) ──> Gemini 3.5 ──> GPT-5.5 ──> Claude 4.8 (Highest Risk)
+```
+*(We recommend starting with Gemini or Mistral APIs for optimal stability and cost efficiency).*
+
+---
+
+## 🌟 What's New in v2.2.0
+* 🎭 **Modern Roleplay UI**: A gorgeous, immersive card-based interface tailored for companion chats. You can seamlessly switch between this and the classic **Legacy UI** via the Settings page.
+* 🇻🇳 **Vietnamese Language Support**: Full app localization in Vietnamese (`Tiếng Việt`) keeping community-specific terms intact.
+* 📂 **Zora Share (.zorashare)**: You can now export and import your custom companion configurations or even entire chat sessions including text messages, level progress, and media (avatar PFP and background chat images are compressed and carried over automatically).
+* 🏷️ **Tag & Meta System**: Companions now feature a dedicated tag system, tag-aware AI instructions, customized tags, descriptions, and creator author tags.
+
+---
+
 ## Features
 *(Everything is free to use. The only cost is what you pay directly to your API/TTS providers).*
 
@@ -26,7 +50,7 @@ Best of all: it's a **bring-your-own-key** model. You run it on your own API key
 * 👥 **Multi-Agent Chats**: Host 1 to 4 AI agents in a single room. Let them debate, or `@tag` them directly.
 * 📂 **Project Templates**: Share instructions and memories across multiple sessions seamlessly.
 * 🧠 **Global Memory**: Persistent, long-term memory that can be toggled on or off per chat.
-* 📈 **Friendship XP (Level 1–10)**: Session-based progression. The AI gets warmer, more compliant, and unlocks NSFW boundaries as you chat (NSFW unlocks at Level 5).
+* 📈 **Relationship XP (Level 1–10)**: Session-based progression. The AI gets warmer, more compliant, and unlocks NSFW boundaries as you chat (NSFW unlocks at Level 5). Defaults to ON for all conversations and can be toggled in the Roleplay UI settings.
 * 💾 **Local-First Database**: Your chats survive app updates, restarts, and closures.
 * 🛠️ **Session Manager**: Clone, rename, search, move, and delete chat rooms instantly.
 * 🔌 **Multi-Provider API**: Native support for **Gemini (best support for Live features)**, Claude, GPT, Grok, and Mistral.
@@ -49,7 +73,7 @@ This repository does not include private API keys or the default master prompt.
 
 ### 100% Local Data:
 * API keys entered in settings.
-* Chat histories, messages, and vector database memories.
+* Chat histories, messages, and database memories.
 * Persona configs and user preferences.
 * Cached TTS audio.
 * Local quota counters.
@@ -110,3 +134,26 @@ For Debug APK:
 ## Disclaimer & Licensing
 * **Disclaimer**: This is a bring-your-own-key application. Model responses, safety refusals, rate limits, and tool execution depend entirely on the selected provider and API plan. The Rule34 tool is adult-only and should only be enabled where legal.
 * **License**: MIT. Keep the credit, do whatever the fuck you want with the code.
+
+---
+
+## 🛠️ AI Development Stack
+The codebase of Zora.AI is built using pair-programming with the following frontier LLMs:
+* **Claude**: Haiku 4.5, Sonnet 4.6, Opus 4.6 & 4.8
+* **Gemini**: 3.1 Pro, 3.5 Flash
+* **Grok**: 4.3 (Fast & Heavy)
+* **GPT**: 5.4 Mini, 5.5 xHigh
+
+---
+
+## 👑 Solo Leveling Credits (Project Team)
+Since this app is a solo-leveled project, here is the organizational structure:
+* **CEO / President**: Phan Chi Vy
+* **Lead Architect**: Phan Chi Vy
+* **UI/UX Designer**: Phan Chi Vy
+* **QA & Tester**: Phan Chi Vy
+* **Copywriter**: Phan Chi Vy
+* **Coffee Maker**: Phan Chi Vy
+* **Janitor / Code Cleaner**: Phan Chi Vy
+* **Hype Man**: Phan Chi Vy
+

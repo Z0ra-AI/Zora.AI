@@ -7,7 +7,17 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaPlayer
+import android.app.LocaleManager
 import android.net.Uri
+import android.content.ContentValues
+import android.content.Context
+import android.provider.MediaStore
+import android.provider.OpenableColumns
+import java.io.IOException
+import android.os.Environment
+import android.os.Build
+import android.os.LocaleList
+import android.provider.DocumentsContract
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -53,8 +63,6 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import java.util.UUID
-import kotlin.math.ceil
-import kotlin.math.max
 
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
@@ -234,12 +242,13 @@ data class ChatSession(
     val storyLore: String = "",
     val archivedContext: String = "",
     val archivedMessageIds: Set<String> = emptySet(),
-    val levelSystemEnabled: Boolean = false,
+    val levelSystemEnabled: Boolean = true,
     val levelXp: Int = 0,
     val projectId: String? = null,
     val background: ChatBackground = ChatBackground.DarkMode,
     val preview: String = "No messages yet",
     val updatedAt: String = "Now",
+    val draft: String = "",
     val messages: List<ChatMessage> = emptyList()
 )
 
@@ -257,6 +266,7 @@ sealed class ChatBackground {
 data class PersonaUiState(
     val displayName: String = "New Persona",
     val tagline: String = "Custom roleplay companion",
+    val author: String = "",
     val instructionMode: InstructionMode = InstructionMode.Beginner,
     val beginnerRole: String = "",
     val beginnerStyle: String = "",
@@ -271,7 +281,7 @@ data class PersonaUiState(
     val avatarScale: Float = 1.0f,
     val avatarOffsetX: Float = 0f,
     val avatarOffsetY: Float = 0f,
-    val traits: List<String> = listOf("Empathetic", "Encouraging", "Curious", "Calm")
+    val traits: List<String> = emptyList()
 )
 
 data class QuotaUsageState(
@@ -327,6 +337,7 @@ private data class PendingSummarizationRequest(
 
 private enum class ApiKeyDialogTarget {
     Provider,
+    GoogleAutoFill,
     Summarizer,
     Tavily,
     Rule34UserId,
@@ -346,7 +357,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val rule34ImageRepository = Rule34ImageRepository()
     private val elevenLabsTtsRepository = ElevenLabsTtsRepository()
     private val chatRepository = ChatRepository.get(application)
-    private val masterSystemPrompt = loadMasterPrompt(application)
+    private val nsfwMasterPrompt = loadMasterPrompt(application, "local_master_prompt.txt")
+    private val sfwMasterPrompt = loadMasterPrompt(application, "local_master_prompt_sfw.txt")
+    private var nsfwModeEnabledValue = true
+    private val masterSystemPrompt: String
+        get() = if (nsfwModeEnabledValue) nsfwMasterPrompt else sfwMasterPrompt
     private val chatStateKey = stringPreferencesKey("chat_state_v1")
     private val activeSessionIdKey = stringPreferencesKey("active_session_id_v1")
     private val projectStateKey = stringPreferencesKey("project_state_v1")
@@ -354,10 +369,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val appNameChoiceKey = stringPreferencesKey("app_name_choice")
     private val geminiLiveVoiceKey = stringPreferencesKey("gemini_live_voice")
     private val globalMemoryKey = stringPreferencesKey("global_memory_block_v1")
+    private val exportDefaultFolderUriKey = stringPreferencesKey("export_default_folder_uri")
+    private val languageCodeKey = stringPreferencesKey("language_code")
+    private val nsfwModeEnabledKey = booleanPreferencesKey("nsfw_mode_enabled_v1")
     private val summarizerSeparateKeyKey = booleanPreferencesKey("summarizer_use_separate_key")
+    private val roleplayUiModeEnabledKey = booleanPreferencesKey("roleplay_ui_mode_enabled_v2")
+    private val levelSystemMigratedKey = booleanPreferencesKey("level_system_migrated_v1")
     private var restoringState = false
     private val persistMutex = Mutex()
-    private val tpmTracker = RollingTpmTracker(TPM_LIMIT)
+    private val tokenBudget = TokenBudgetManager()
     private val maxAttachedImages = 12
     private var summarizationJob: Job? = null
     private var pendingSummarization: PendingSummarizationRequest? = null
@@ -370,6 +390,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var currentVoiceCallModelText = ""
     private var voiceCallVisualReconnectPending = false
     private var lastVoiceCallVisualReconnectAt = 0L
+    private var draftPersistJob: Job? = null
 
     var draft by mutableStateOf("")
         private set
@@ -487,7 +508,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     var globalMemoryBlock by mutableStateOf("")
         private set
 
+    var nsfwModeEnabled by mutableStateOf(true)
+        private set
+
+    var roleplayUiModeEnabled by mutableStateOf(false)
+        private set
+
+    var languageCode by mutableStateOf("en")
+        private set
+
     var quotaUsage by mutableStateOf(QuotaUsageState())
+        private set
+
+    var autoFillDialogVisible by mutableStateOf(false)
+        private set
+
+    var isAutoFilling by mutableStateOf(false)
         private set
 
     val sessions = mutableStateListOf(
@@ -559,6 +595,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val apiKeyDialogTitle: String
         get() = when (apiKeyDialogTarget) {
             ApiKeyDialogTarget.Provider -> "${persona.vendor.label} API key"
+            ApiKeyDialogTarget.GoogleAutoFill -> "Google API key"
             ApiKeyDialogTarget.Summarizer -> "Gemini summarizer API key"
             ApiKeyDialogTarget.Tavily -> "Tavily API key"
             ApiKeyDialogTarget.Rule34UserId -> "Rule34 User ID"
@@ -602,7 +639,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             settingsDataStore.data.collectLatest { preferences ->
                 globalMemoryBlock = preferences[globalMemoryKey].orEmpty()
+                val restoredNsfw = preferences[nsfwModeEnabledKey] ?: true
+                nsfwModeEnabled = restoredNsfw
+                nsfwModeEnabledValue = restoredNsfw
                 summarizerUsesSeparateKey = preferences[summarizerSeparateKeyKey] ?: false
+                roleplayUiModeEnabled = preferences[roleplayUiModeEnabledKey] ?: false
+                languageCode = preferences[languageCodeKey] ?: "en"
             }
         }
         viewModelScope.launch {
@@ -653,6 +695,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateDraft(value: String) {
         draft = value
+        val index = sessions.indexOfFirst { it.id == activeSessionId }
+        if (index >= 0) {
+            sessions[index] = sessions[index].copy(draft = value)
+        }
+        draftPersistJob?.cancel()
+        draftPersistJob = viewModelScope.launch {
+            delay(500L)
+            persistChatState()
+        }
     }
 
     fun sendDraft() {
@@ -1939,7 +1990,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectSession(id: String) {
         activeSessionId = id
-        draft = ""
+        val session = sessions.firstOrNull { it.id == id }
+        draft = session?.draft ?: ""
         attachedImageUris = emptyList()
         sessionDrawerVisible = false
         persistChatState()
@@ -1954,6 +2006,54 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             responseRounds = 1,
             projectId = projectId,
             preview = "No messages yet"
+        )
+        sessions.add(0, session)
+        activeSessionId = session.id
+        draft = ""
+        attachedImageUris = emptyList()
+        sessionDrawerVisible = false
+        persistChatState()
+    }
+
+    fun createSessionWithPersona(
+        name: String,
+        tagline: String,
+        prompt: String,
+        tags: List<String>,
+        greeting: String,
+        storyLore: String = "",
+        avatarUri: Uri? = null,
+        background: ChatBackground = ChatBackground.DarkMode
+    ) {
+        val firstMember = GroupMember(
+            persona = PersonaUiState(
+                displayName = name,
+                tagline = tagline,
+                instructionPrompt = prompt,
+                traits = tags,
+                avatarUri = avatarUri
+            )
+        )
+        val welcomeMsg = if (greeting.isNotBlank()) {
+            ChatMessage(
+                role = "assistant",
+                content = greeting,
+                speakerId = firstMember.id,
+                speakerName = name
+            )
+        } else null
+
+        val session = ChatSession(
+            title = name,
+            persona = firstMember.persona,
+            members = listOf(firstMember),
+            activeMemberId = firstMember.id,
+            responseRounds = 1,
+            storyLore = storyLore.take(MAX_STORY_LORE_CHARS),
+            preview = greeting.ifBlank { "No messages yet" },
+            headerAvatarUri = avatarUri,
+            background = background,
+            messages = if (welcomeMsg != null) listOf(welcomeMsg) else emptyList()
         )
         sessions.add(0, session)
         activeSessionId = session.id
@@ -1994,6 +2094,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 instruction = value.take(MAX_PROJECT_INSTRUCTION_CHARS),
                 updatedAt = currentTime()
             )
+        }
+    }
+
+    fun deleteProject(projectId: String) {
+        val removed = projects.removeAll { it.id == projectId }
+        if (!removed) return
+
+        var sessionsChanged = false
+        sessions.indices.forEach { index ->
+            val session = sessions[index]
+            if (session.projectId == projectId) {
+                sessions[index] = session.copy(
+                    projectId = null,
+                    updatedAt = currentTime()
+                )
+                sessionsChanged = true
+            }
+        }
+
+        persistProjects()
+        if (sessionsChanged) {
+            persistChatState()
         }
     }
 
@@ -2087,7 +2209,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         if (deletingActiveSession) {
-            draft = ""
+            val newActiveSession = sessions.firstOrNull { it.id == activeSessionId }
+            draft = newActiveSession?.draft ?: ""
             attachedImageUris = emptyList()
             personaSheetVisible = false
         }
@@ -2128,10 +2251,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    val output = getApplication<Application>().contentResolver.openOutputStream(destination)
+                    val context = getApplication<Application>()
+                    val output = context.contentResolver.openOutputStream(destination)
                         ?: error("Could not open export destination.")
                     output.bufferedWriter().use { writer ->
-                        writer.write(exportSessionJson(session))
+                        writer.write(exportSessionJson(context, session))
                     }
                 }
             }
@@ -2139,15 +2263,31 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun getFileNameFromUri(context: Context, uri: Uri): String? {
+        if (uri.scheme == "content") {
+            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (nameIndex != -1 && cursor.moveToFirst()) {
+                    return cursor.getString(nameIndex)
+                }
+            }
+        }
+        return uri.path?.substringAfterLast('/')
+    }
+
     fun importSessionFromUri(source: Uri) {
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    val input = getApplication<Application>().contentResolver.openInputStream(source)
+                    val context = getApplication<Application>()
+                    val fileName = getFileNameFromUri(context, source)
+                    if (fileName == null || !fileName.endsWith(".zorashare", ignoreCase = true)) {
+                        error("Only .zorashare files can be imported.")
+                    }
+                    val input = context.contentResolver.openInputStream(source)
                         ?: error("Could not open import file.")
                     val raw = input.bufferedReader().use { reader -> reader.readText() }
-                    parseSessionExportJson(raw)?.freshImportCopy()
-                        ?: error("This is not a valid Zora session export.")
+                    parseAndLoadImportedSession(context, raw).freshImportCopy()
                 }
             }
             result
@@ -2164,6 +2304,360 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     chatError = throwable.message?.take(160) ?: "Import failed."
                 }
         }
+    }
+
+    fun autoExportSession(
+        sessionId: String,
+        onSuccess: (String) -> Unit,
+        onFailure: (String) -> Unit
+    ) {
+        val session = sessions.firstOrNull { it.id == sessionId } ?: return
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val context = getApplication<Application>()
+                    val fileName = sessionExportFileName(session.id)
+                    val jsonContent = exportSessionJson(context, session)
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        val contentValues = ContentValues().apply {
+                            put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                            put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream")
+                            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                        }
+                        val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                            ?: throw IOException("Failed to create MediaStore entry.")
+                        context.contentResolver.openOutputStream(uri)?.use { out ->
+                            out.bufferedWriter().use { it.write(jsonContent) }
+                        }
+                        "Downloads/$fileName"
+                    } else {
+                        val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                            ?: throw IOException("External files dir unavailable.")
+                        val file = File(dir, fileName)
+                        file.writeText(jsonContent)
+                        "Android/data/${context.packageName}/files/Download/$fileName"
+                    }
+                }
+            }
+            result
+                .onSuccess { path -> onSuccess(path) }
+                .onFailure { err -> onFailure(err.message ?: "Export failed") }
+        }
+    }
+
+    fun setDefaultExportFolder(uri: Uri) {
+        viewModelScope.launch {
+            settingsDataStore.edit { preferences ->
+                preferences[exportDefaultFolderUriKey] = uri.toString()
+            }
+        }
+    }
+
+    fun exportConfigOnly(
+        session: ChatSession,
+        folderUri: Uri? = null,
+        onNeedsFolder: () -> Unit,
+        onSuccess: (String) -> Unit,
+        onFailure: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            val storedFolder = folderUri ?: settingsDataStore.data.first()[exportDefaultFolderUriKey]?.let(Uri::parse)
+            if (storedFolder == null) {
+                onNeedsFolder()
+                return@launch
+            }
+
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val context = getApplication<Application>()
+                    val resolver = context.contentResolver
+                    val treeDocumentUri = DocumentsContract.buildDocumentUriUsingTree(
+                        storedFolder,
+                        DocumentsContract.getTreeDocumentId(storedFolder)
+                    )
+                    val fileName = configExportFileNameFor(session)
+                    val destination = DocumentsContract.createDocument(
+                        resolver,
+                        treeDocumentUri,
+                        "application/octet-stream",
+                        fileName
+                    ) ?: throw IOException("Could not create export file.")
+                    resolver.openOutputStream(destination)?.use { out ->
+                        out.bufferedWriter().use { it.write(configShareJsonFor(context, session)) }
+                    } ?: throw IOException("Could not open export file.")
+                    fileName
+                }
+            }
+            result
+                .onSuccess { fileName -> onSuccess(fileName) }
+                .onFailure { err -> onFailure(err.message ?: "Export failed") }
+        }
+    }
+
+
+
+    private suspend fun configShareJsonFor(context: android.content.Context, session: ChatSession): String {
+        val root = JSONObject()
+        root.put("format", "zora.config.share")
+        root.put("version", 1)
+        root.put("displayName", session.persona.displayName)
+        root.put("tagline", session.persona.tagline)
+        root.put("author", session.persona.author)
+        root.put("avatarScale", session.persona.avatarScale.toDouble())
+        root.put("avatarOffsetX", session.persona.avatarOffsetX.toDouble())
+        root.put("avatarOffsetY", session.persona.avatarOffsetY.toDouble())
+        root.put("instructionMode", session.persona.instructionMode.name)
+        root.put("beginnerRole", session.persona.beginnerRole)
+        root.put("beginnerStyle", session.persona.beginnerStyle)
+        root.put("beginnerLimits", session.persona.beginnerLimits)
+        root.put("instructionPrompt", session.persona.instructionPrompt)
+        root.put("vendor", session.persona.vendor.id)
+        root.put("model", session.persona.model)
+        root.put("safetyLevel", session.persona.safetyLevel.name)
+        root.put("thinkingEffort", session.persona.thinkingEffort.name)
+        root.put("temperature", session.persona.temperature.toDouble())
+        root.put(
+            "traits",
+            JSONArray().apply {
+                session.persona.traits.forEach { trait -> put(trait) }
+            }
+        )
+        root.put("storyLore", session.storyLore)
+        root.put("backgroundJson", session.background.toJson().toString())
+
+        val avatarUri = session.persona.avatarUri ?: session.headerAvatarUri
+        if (avatarUri != null) {
+            val base64 = compressImageToBase64(context, avatarUri)
+            if (base64 != null) {
+                root.put("avatarBase64", base64)
+            }
+        }
+
+        val bg = session.background
+        if (bg is ChatBackground.CustomImage) {
+            val base64 = compressImageToBase64(context, bg.uri)
+            if (base64 != null) {
+                root.put("backgroundBase64", base64)
+            }
+        }
+
+        return root.toString(2)
+    }
+
+    fun shareActiveConfig(context: android.content.Context) {
+        val session = activeSession
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val shareDir = File(context.cacheDir, "shared").apply { mkdirs() }
+                    val cleanName = session.persona.displayName.ifBlank { "companion" }
+                        .replace(Regex("[^A-Za-z0-9._-]+"), "-")
+                        .trim('-', '.', '_')
+                        .take(24)
+                    val shareFile = File(shareDir, "$cleanName.zorashare")
+                    shareFile.writeText(configShareJsonFor(context, session))
+
+                    val authority = "${context.packageName}.fileprovider"
+                    val contentUri = androidx.core.content.FileProvider.getUriForFile(context, authority, shareFile)
+                    
+                    val intent = Intent(Intent.ACTION_SEND).apply {
+                        type = "application/octet-stream"
+                        putExtra(Intent.EXTRA_STREAM, contentUri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    val chooser = Intent.createChooser(intent, "Share Companion Configuration").apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(chooser)
+                }
+            }
+            if (result.isFailure) {
+                chatError = result.exceptionOrNull()?.message?.take(160) ?: "Sharing failed"
+            }
+        }
+    }
+
+    fun importConfigFromUri(context: android.content.Context, sourceUri: Uri) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val input = context.contentResolver.openInputStream(sourceUri)
+                        ?: error("Could not open import file.")
+                    val raw = input.bufferedReader().use { it.readText() }
+                    parseAndLoadImportedSession(context, raw).freshImportCopy()
+                }
+            }
+            result
+                .onSuccess { importedSession ->
+                    sessions.add(0, importedSession)
+                    activeSessionId = importedSession.id
+                    draft = ""
+                    attachedImageUris = emptyList()
+                    sessionDrawerVisible = false
+                    chatError = null
+                    persistChatState()
+                }
+                .onFailure { throwable ->
+                    chatError = throwable.message?.take(160) ?: "Import config failed."
+                }
+        }
+    }
+
+    private suspend fun parseAndLoadImportedSession(context: android.content.Context, raw: String): ChatSession {
+        val root = JSONObject(raw)
+        val format = root.optString("format")
+        return when (format) {
+            "zora.config.share" -> parseConfigShareJson(context, root)
+            "zora.session.export" -> {
+                val sessionJson = root.getJSONObject("session")
+                parseSessionExportJsonWithMedia(context, sessionJson)
+            }
+            else -> {
+                val sessionJson = root.optJSONObject("session")
+                if (sessionJson != null) {
+                    parseSessionExportJsonWithMedia(context, sessionJson)
+                } else {
+                    parseConfigShareJson(context, root)
+                }
+            }
+        }
+    }
+
+    private fun parseConfigShareJson(context: android.content.Context, root: JSONObject): ChatSession {
+        if (root.optString("format") != "zora.config.share" && root.optJSONObject("session") != null) {
+            error("This is not a valid Zora config share.")
+        }
+        val displayName = root.optString("displayName").ifBlank { "Imported Companion" }
+        val tagline = root.optString("tagline").ifBlank { "Custom roleplay companion" }
+        val author = root.optString("author")
+        val avatarScale = root.optDouble("avatarScale", 1.0).toFloat()
+        val avatarOffsetX = root.optDouble("avatarOffsetX", 0.0).toFloat()
+        val avatarOffsetY = root.optDouble("avatarOffsetY", 0.0).toFloat()
+        val instructionModeName = root.optString("instructionMode")
+        val instructionMode = InstructionMode.entries.firstOrNull { it.name == instructionModeName }
+            ?: InstructionMode.Beginner
+        val beginnerRole = root.optString("beginnerRole")
+        val beginnerStyle = root.optString("beginnerStyle")
+        val beginnerLimits = root.optString("beginnerLimits")
+        val instructionPrompt = root.optString("instructionPrompt")
+        val storyLore = root.optString("storyLore")
+        val backgroundJson = root.optString("backgroundJson")
+        val traitsJson = root.optJSONArray("traits")
+        val traits = buildList {
+            if (traitsJson != null) {
+                for (index in 0 until traitsJson.length()) {
+                    add(traitsJson.optString(index))
+                }
+            }
+        }.filter { it.isNotBlank() }
+
+        val importDir = File(context.filesDir, "shared_imports").apply { mkdirs() }
+        val uuid = UUID.randomUUID().toString()
+
+        var importedAvatarUri: Uri? = null
+        val avatarBase64 = root.optString("avatarBase64")
+        if (avatarBase64.isNotBlank()) {
+            val avatarBytes = android.util.Base64.decode(avatarBase64, android.util.Base64.DEFAULT)
+            val avatarFile = File(importDir, "avatar_$uuid.jpg")
+            avatarFile.writeBytes(avatarBytes)
+            importedAvatarUri = Uri.fromFile(avatarFile)
+        }
+
+        var importedBackground: ChatBackground = ChatBackground.DarkMode
+        val backgroundBase64 = root.optString("backgroundBase64")
+        if (backgroundBase64.isNotBlank()) {
+            val bgBytes = android.util.Base64.decode(backgroundBase64, android.util.Base64.DEFAULT)
+            val bgFile = File(importDir, "background_$uuid.jpg")
+            bgFile.writeBytes(bgBytes)
+            importedBackground = ChatBackground.CustomImage(Uri.fromFile(bgFile))
+        } else if (backgroundJson.isNotBlank()) {
+            importedBackground = runCatching { JSONObject(backgroundJson).toChatBackground() }.getOrDefault(ChatBackground.DarkMode)
+        }
+
+        val defaultVendor = ApiVendor.Google
+        val defaultModel = defaultVendor.defaultModel
+        val importedPersona = PersonaUiState(
+            displayName = displayName,
+            tagline = tagline,
+            author = author,
+            instructionMode = instructionMode,
+            beginnerRole = beginnerRole,
+            beginnerStyle = beginnerStyle,
+            beginnerLimits = beginnerLimits,
+            instructionPrompt = instructionPrompt,
+            avatarUri = importedAvatarUri,
+            avatarScale = avatarScale,
+            avatarOffsetX = avatarOffsetX,
+            avatarOffsetY = avatarOffsetY,
+            vendor = defaultVendor,
+            model = defaultModel,
+            traits = traits.filterNot { it in listOf("Empathetic", "Encouraging", "Curious", "Calm") }
+        )
+        
+        val firstMember = GroupMember(persona = importedPersona)
+        return ChatSession(
+            persona = importedPersona,
+            members = listOf(firstMember),
+            activeMemberId = firstMember.id,
+            title = displayName,
+            headerAvatarUri = importedAvatarUri,
+            headerAvatarScale = avatarScale,
+            headerAvatarOffsetX = avatarOffsetX,
+            headerAvatarOffsetY = avatarOffsetY,
+            storyLore = storyLore,
+            background = importedBackground,
+            preview = "Imported configuration"
+        )
+    }
+
+    private fun parseSessionExportJsonWithMedia(context: android.content.Context, sessionJson: JSONObject): ChatSession {
+        var session = sessionJson.toChatSession()
+        val uuid = UUID.randomUUID().toString()
+        val importDir = File(context.filesDir, "shared_imports").apply { mkdirs() }
+        
+        var importedAvatarUri: Uri? = null
+        val avatarBase64 = sessionJson.optString("avatarBase64")
+        if (avatarBase64.isNotBlank()) {
+            val avatarBytes = android.util.Base64.decode(avatarBase64, android.util.Base64.DEFAULT)
+            val avatarFile = File(importDir, "avatar_$uuid.jpg")
+            avatarFile.writeBytes(avatarBytes)
+            importedAvatarUri = Uri.fromFile(avatarFile)
+        }
+        
+        var importedBackground: ChatBackground? = null
+        val backgroundBase64 = sessionJson.optString("backgroundBase64")
+        if (backgroundBase64.isNotBlank()) {
+            val bgBytes = android.util.Base64.decode(backgroundBase64, android.util.Base64.DEFAULT)
+            val bgFile = File(importDir, "background_$uuid.jpg")
+            bgFile.writeBytes(bgBytes)
+            importedBackground = ChatBackground.CustomImage(Uri.fromFile(bgFile))
+        }
+        
+        if (importedAvatarUri != null) {
+            val updatedPersona = session.persona.copy(avatarUri = importedAvatarUri)
+            val updatedMembers = session.normalizedMembers().map { member ->
+                if (member.id == session.activeMemberId) {
+                    member.copy(persona = updatedPersona)
+                } else {
+                    member.copy(persona = member.persona.copy(avatarUri = importedAvatarUri))
+                }
+            }
+            session = session.copy(
+                headerAvatarUri = importedAvatarUri,
+                persona = updatedPersona,
+                members = updatedMembers
+            )
+        }
+        if (importedBackground != null) {
+            session = session.copy(background = importedBackground)
+        }
+        
+        return session
+    }
+
+    fun clearChatError() {
+        chatError = null
     }
 
     fun toggleMorePersonaOptions() {
@@ -2228,9 +2722,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun saveApiKey() {
+        if (apiKeyDialogTarget == ApiKeyDialogTarget.GoogleAutoFill) {
+            saveAutoFillApiKey()
+            return
+        }
         viewModelScope.launch {
             when (apiKeyDialogTarget) {
                 ApiKeyDialogTarget.Provider -> apiKeyManager.replaceProviderKey(persona.vendor.id, apiKeyDraft)
+                ApiKeyDialogTarget.GoogleAutoFill -> Unit // handled above before this coroutine
                 ApiKeyDialogTarget.Summarizer -> apiKeyManager.replaceSummarizerKey(apiKeyDraft)
                 ApiKeyDialogTarget.Tavily -> apiKeyManager.replaceTavilyKey(apiKeyDraft)
                 ApiKeyDialogTarget.Rule34UserId -> apiKeyManager.replaceRule34UserId(apiKeyDraft)
@@ -2324,6 +2823,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         updatePersona { it.copy(displayName = value.take(32)) }
     }
 
+    fun updateAuthor(value: String) {
+        updatePersona { it.copy(author = value.take(32)) }
+    }
+
+    fun updateTagline(value: String) {
+        updatePersona { it.copy(tagline = value.take(80)) }
+    }
+
+    fun updateTraits(value: List<String>) {
+        updatePersona { it.copy(traits = value.distinct().take(24)) }
+    }
+
     fun selectGroupMember(memberId: String) {
         updateActiveSession { session ->
             val members = session.normalizedMembers()
@@ -2400,6 +2911,40 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun updateNsfwModeEnabled(value: Boolean) {
+        nsfwModeEnabled = value
+        nsfwModeEnabledValue = value
+        viewModelScope.launch(Dispatchers.IO) {
+            settingsDataStore.edit { preferences ->
+                preferences[nsfwModeEnabledKey] = value
+            }
+        }
+    }
+
+    fun updateRoleplayUiModeEnabled(value: Boolean) {
+        roleplayUiModeEnabled = value
+        viewModelScope.launch(Dispatchers.IO) {
+            settingsDataStore.edit { preferences ->
+                preferences[roleplayUiModeEnabledKey] = value
+            }
+        }
+    }
+
+    fun updateLanguage(code: String) {
+        val normalized = if (code == "vi") "vi" else "en"
+        languageCode = normalized
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getApplication<Application>()
+                .getSystemService(LocaleManager::class.java)
+                ?.applicationLocales = LocaleList.forLanguageTags(normalized)
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            settingsDataStore.edit { preferences ->
+                preferences[languageCodeKey] = normalized
+            }
+        }
+    }
+
     fun updatePersonaPrompt(value: String) {
         updatePersona { it.copy(instructionPrompt = value) }
     }
@@ -2423,6 +2968,107 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun updateStoryLore(value: String) {
         updateActiveSession { session ->
             session.copy(storyLore = value.take(MAX_STORY_LORE_CHARS))
+        }
+    }
+
+    fun openAutoFillDialog() {
+        autoFillDialogVisible = true
+    }
+
+    fun closeAutoFillDialog() {
+        autoFillDialogVisible = false
+    }
+
+    fun autoFillWithAI(userPrompt: String) {
+        if (userPrompt.isBlank()) return
+        viewModelScope.launch {
+            isAutoFilling = true
+            // Auto-fill always runs on a Gemini model, so it needs a Google key
+            // regardless of the active persona's vendor. Resolve it explicitly.
+            val apiKey = apiKeyManager.keyForProvider(ApiVendor.Google.id)
+            if (apiKey.isNullOrBlank()) {
+                isAutoFilling = false
+                openGoogleApiKeyForAutoFill()
+                return@launch
+            }
+            val result = geminiChatService.autoFillPersonaFields(apiKey, userPrompt)
+            result.onSuccess { data ->
+                updateStoryLore(data.storyLore)
+                updateBeginnerRole(data.beginnerRole)
+                updateBeginnerStyle(data.beginnerStyle)
+                updateBeginnerLimits(data.beginnerLimits)
+                autoFillDialogVisible = false
+                chatError = null
+            }.onFailure { e ->
+                chatError = e.message?.take(180) ?: "Auto-fill failed."
+            }
+            isAutoFilling = false
+        }
+    }
+
+    fun autoFillWithAIForCreate(
+        userPrompt: String,
+        onResult: (prompt: String, storyLore: String) -> Unit
+    ) {
+        if (userPrompt.isBlank()) return
+        viewModelScope.launch {
+            isAutoFilling = true
+            val apiKey = apiKeyManager.keyForProvider(ApiVendor.Google.id)
+            if (apiKey.isNullOrBlank()) {
+                isAutoFilling = false
+                openGoogleApiKeyForAutoFill()
+                return@launch
+            }
+            val result = geminiChatService.autoFillPersonaFields(apiKey, userPrompt)
+            result.onSuccess { data ->
+                val generatedPrompt = buildString {
+                    if (data.beginnerRole.isNotBlank()) {
+                        appendLine("Role: ${data.beginnerRole.trim()}")
+                    }
+                    if (data.beginnerStyle.isNotBlank()) {
+                        appendLine("Style: ${data.beginnerStyle.trim()}")
+                    }
+                    if (data.beginnerLimits.isNotBlank()) {
+                        appendLine("Limits: ${data.beginnerLimits.trim()}")
+                    }
+                }.trim()
+                onResult(generatedPrompt, data.storyLore)
+                chatError = null
+            }.onFailure { e ->
+                chatError = e.message?.take(180) ?: "Auto-fill failed."
+            }
+            isAutoFilling = false
+        }
+    }
+
+    /**
+     * Opens the API key dialog specifically for the Google key needed by AI
+     * Auto-fill, and remembers that an entered key must be saved under Google
+     * (NOT the active persona's vendor, which may differ).
+     */
+    private fun openGoogleApiKeyForAutoFill() {
+        apiKeyDialogTarget = ApiKeyDialogTarget.GoogleAutoFill
+        apiKeyDraft = ""
+        apiKeyDialogVisible = true
+        chatError = "Auto-fill uses Gemini, so add a Google API key first."
+    }
+
+    /**
+     * Called by the API key dialog's save action when the key is being added
+     * for AI Auto-fill. Always stores under the Google provider.
+     */
+    fun saveAutoFillApiKey() {
+        val key = apiKeyDraft.trim()
+        if (key.isBlank()) {
+            apiKeyDialogVisible = false
+            apiKeyDraft = ""
+            return
+        }
+        viewModelScope.launch {
+            apiKeyManager.replaceProviderKey(ApiVendor.Google.id, key)
+            apiKeyDialogVisible = false
+            apiKeyDraft = ""
+            chatError = null
         }
     }
 
@@ -2659,15 +3305,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         masterPrompt: String?
     ): Result<GeminiChatReply> {
         val managedHistory = mutableHistoryForSession(sessionId, history)
-        if (vendor == ApiVendor.Google) {
-            val estimatedTokens = geminiChatService.estimateMessageRequestTokens(
+        val requestId = reserveOutgoingRequest(
+            sessionId = sessionId,
+            vendor = vendor,
+            estimatedTokens = geminiChatService.estimateMessageRequestTokens(
                 persona = persona,
                 history = managedHistory,
                 userInput = userInput,
                 masterPrompt = masterPrompt
-            )
-            registerOutgoingGeminiRequest(sessionId, estimatedTokens)
-        }
+            ),
+            historyContents = managedHistory.map { it.content },
+            systemPrompt = masterPrompt,
+            userInput = userInput
+        )
         return geminiChatService.sendMessage(
             apiKey = apiKey,
             persona = persona,
@@ -2678,7 +3328,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             images = images,
             webSearchEnabled = webSearchEnabled,
             masterPrompt = masterPrompt
-        )
+        ).also { result ->
+            result.onSuccess { reply -> tokenBudget.settle(requestId, reply.totalTokenCount) }
+                .onFailure { tokenBudget.release(requestId) }
+        }
     }
 
     private suspend fun planManagedToolUse(
@@ -2694,16 +3347,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         masterPrompt: String?
     ): Result<GeminiToolPlan> {
         val managedHistory = mutableHistoryForSession(sessionId, history)
-        if (vendor == ApiVendor.Google) {
-            val estimatedTokens = geminiChatService.estimateToolPlanRequestTokens(
+        val requestId = reserveOutgoingRequest(
+            sessionId = sessionId,
+            vendor = vendor,
+            estimatedTokens = geminiChatService.estimateToolPlanRequestTokens(
                 persona = persona,
                 history = managedHistory,
                 userInput = userInput,
                 enabledTools = enabledTools,
                 masterPrompt = masterPrompt
-            )
-            registerOutgoingGeminiRequest(sessionId, estimatedTokens)
-        }
+            ),
+            historyContents = managedHistory.map { it.content },
+            systemPrompt = masterPrompt,
+            userInput = userInput
+        )
         return geminiChatService.planToolUse(
             apiKey = apiKey,
             vendor = vendor,
@@ -2714,7 +3371,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             images = images,
             enabledTools = enabledTools,
             masterPrompt = masterPrompt
-        )
+        ).also { result ->
+            result.onSuccess { plan -> tokenBudget.settle(requestId, plan.toReply().totalTokenCount) }
+                .onFailure { tokenBudget.release(requestId) }
+        }
     }
 
     private fun mutableHistoryForSession(
@@ -2728,27 +3388,62 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return history.filterNot { it.id in archivedIds }
     }
 
-    private fun registerOutgoingGeminiRequest(
+    /**
+     * Reserve tokens for an outgoing request, decide whether the verbatim history
+     * needs trimming, and (when in Yellow/Red) kick off summarization. Returns the
+     * requestId callers must pass to [recordUsage] so the window can be settled
+     * against the real token count once the reply arrives.
+     */
+    private fun reserveOutgoingRequest(
         sessionId: String,
-        estimatedTokens: Int
-    ) {
-        val currentTokens = tpmTracker.currentTokens()
-        if (currentTokens < TPM_YELLOW_TOKENS) {
+        vendor: ApiVendor,
+        estimatedTokens: Int,
+        historyContents: List<String>,
+        systemPrompt: String?,
+        userInput: String
+    ): String {
+        val requestId = "${sessionId}:${System.nanoTime()}"
+        val projectedBefore = tokenBudget.projectedTokens()
+        if (projectedBefore < TokenBudgetManager.TPM_YELLOW_TOKENS) {
             redMutableFloorHeld = false
         }
-        val projectedTokens = currentTokens + estimatedTokens
-        val zone = tpmTracker.zoneFor(projectedTokens)
+        tokenBudget.reserve(requestId, estimatedTokens)
+        val projectedAfter = tokenBudget.projectedTokens()
+        val zone = tokenBudget.zoneFor(projectedAfter)
         if (zone == TpmComfortZone.Red) {
             redMutableFloorHeld = true
         }
-        tpmTracker.record(estimatedTokens)
 
-        if (zone != TpmComfortZone.Green || redMutableFloorHeld) {
+        val session = sessions.firstOrNull { it.id == sessionId }
+        val mutableCount = session?.messages
+            ?.count { it.id !in session.archivedMessageIds && !it.isImageLoading }
+            ?: 0
+        val plan = ContextTrimPolicy.plan(
+            mutableCount = mutableCount,
+            projectedPromptTokens = TokenEstimator.estimateRequestTokens(
+                systemPrompt = systemPrompt.orEmpty(),
+                historyContents = historyContents,
+                userInput = userInput
+            ),
+            aggressive = zone == TpmComfortZone.Red || redMutableFloorHeld
+        )
+        if (plan.shouldTrim) {
+            enqueueSummarization(
+                sessionId = sessionId,
+                aggressive = plan.aggressiveEquivalent()
+            )
+        } else if (zone != TpmComfortZone.Green || redMutableFloorHeld) {
             enqueueSummarization(
                 sessionId = sessionId,
                 aggressive = zone == TpmComfortZone.Red || redMutableFloorHeld
             )
         }
+        return requestId
+    }
+
+    private fun ContextTrimPolicy.TrimPlan.aggressiveEquivalent(): Boolean {
+        // Over the hard cap means aggressive trimming — same behavior as the old Red floor.
+        return true
     }
 
     private fun enqueueSummarization(
@@ -2789,11 +3484,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (mutableMessages.size <= 1) return
 
-        val retainedCount = if (request.aggressive) {
-            max(RED_MUTABLE_MESSAGE_FLOOR, ceil(mutableMessages.size * 0.20).toInt())
-        } else {
-            ceil(mutableMessages.size * 0.40).toInt().coerceAtLeast(1)
-        }.coerceAtMost(mutableMessages.size)
+        val projectedPromptTokens = TokenEstimator.estimateRequestTokens(
+            systemPrompt = masterSystemPrompt,
+            historyContents = mutableMessages.map { it.content },
+            userInput = ""
+        )
+        val plan = ContextTrimPolicy.plan(
+            mutableCount = mutableMessages.size,
+            projectedPromptTokens = projectedPromptTokens,
+            aggressive = request.aggressive
+        )
+        if (!plan.shouldTrim) return
+        val retainedCount = plan.retainCount
         val messagesToArchive = mutableMessages.dropLast(retainedCount)
         if (messagesToArchive.isEmpty()) return
 
@@ -2818,7 +3520,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (chatLog.isBlank()) return
 
-        tpmTracker.record(
+        val requestId = "summarize:${request.sessionId}:${System.nanoTime()}"
+        tokenBudget.reserve(
+            requestId,
             geminiChatService.estimateSummarizerRequestTokens(
                 chatLog = chatLog,
                 masterPrompt = masterSystemPrompt
@@ -2828,7 +3532,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             apiKey = apiKey,
             chatLog = chatLog,
             masterPrompt = masterSystemPrompt
-        ).getOrNull() ?: return
+        ).also { result ->
+            result.onSuccess { tokenBudget.settle(requestId, it.totalTokenCount) }
+                .onFailure { tokenBudget.release(requestId) }
+        }.getOrNull() ?: return
         val summary = reply.text.trim()
         if (summary.isBlank()) return
         recordUsage(reply)
@@ -2841,10 +3548,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (!currentIds.containsAll(selectedIds)) return
         if (selectedIds.any { it in currentSession.archivedMessageIds }) return
 
+        val nextArchive = listOf(currentSession.archivedContext.trim(), summary)
+            .filter { it.isNotBlank() }
+            .joinToString("\n\n")
+        // Bound the rolling memory: when it grows past the recompress threshold,
+        // keep only the newest slice so the injected context never explodes.
+        val boundedArchive = if (nextArchive.length > TokenBudgetManager.ARCHIVE_RECOMPRESS_THRESHOLD_CHARS) {
+            nextArchive.takeLast(TokenBudgetManager.ARCHIVE_RECOMPRESS_THRESHOLD_CHARS)
+        } else {
+            nextArchive
+        }
         sessions[currentIndex] = currentSession.copy(
-            archivedContext = listOf(currentSession.archivedContext.trim(), summary)
-                .filter { it.isNotBlank() }
-                .joinToString("\n\n"),
+            archivedContext = boundedArchive,
             archivedMessageIds = currentSession.archivedMessageIds + selectedIds
         )
         persistChatState()
@@ -2937,13 +3652,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         sessionId: String,
         requestedSpeaker: GroupMember?
     ) {
-        val pingMessage = ChatMessage(role = "user", content = "ping")
-        appendMessage(
-            sessionId = sessionId,
-            message = pingMessage,
-            preview = "ping"
-        )
-
         val refreshedSession = sessions.firstOrNull { it.id == sessionId } ?: return
         val members = refreshedSession.normalizedMembers()
         val targetMember = requestedSpeaker?.let { requested ->
@@ -2965,7 +3673,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     id = targetMember.id,
                     persona = targetMember.persona
                 ),
-                history = refreshedSession.messages.dropLast(1).toEntities(sessionId),
+                history = refreshedSession.messages.toEntities(sessionId),
                 userInput = "ping",
                 vendor = targetMember.persona.vendor,
                 safetyLevel = targetMember.persona.safetyLevel,
@@ -3003,7 +3711,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             .onFailure { throwable ->
-                handleSendFailure(throwable, pingMessage.id)
+                val lastUserMessageId = refreshedSession.messages
+                    .lastOrNull { it.role == "user" }?.id
+                handleSendFailure(throwable, lastUserMessageId ?: "")
             }
     }
 
@@ -3032,7 +3742,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun restoreChatState() {
         val preferences = settingsDataStore.data.first()
-        val dbSessions = chatRepository.loadSessions()
+        var dbSessions = chatRepository.loadSessions()
+        if (preferences[levelSystemMigratedKey] != true) {
+            dbSessions = dbSessions.map { it.copy(levelSystemEnabled = true) }
+            chatRepository.replaceAll(dbSessions)
+            settingsDataStore.edit { it[levelSystemMigratedKey] = true }
+        }
         if (dbSessions.isNotEmpty()) {
             restoringState = true
             try {
@@ -3041,6 +3756,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 activeSessionId = preferences[activeSessionIdKey]
                     .takeIf { id -> id != null && sessions.any { it.id == id } }
                     ?: sessions.first().id
+                draft = sessions.firstOrNull { it.id == activeSessionId }?.draft ?: ""
             } finally {
                 restoringState = false
             }
@@ -3056,6 +3772,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             activeSessionId = restoredState.activeSessionId
                 .takeIf { id -> sessions.any { it.id == id } }
                 ?: sessions.first().id
+            draft = sessions.firstOrNull { it.id == activeSessionId }?.draft ?: ""
             chatRepository.replaceAll(sessions.toList())
             settingsDataStore.edit { updatedPreferences ->
                 updatedPreferences[activeSessionIdKey] = activeSessionId
@@ -3124,6 +3841,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun persistChatState() {
         if (restoringState) return
         val activeId = activeSessionId
+        val index = sessions.indexOfFirst { it.id == activeId }
+        if (index >= 0 && sessions[index].draft != draft) {
+            sessions[index] = sessions[index].copy(draft = draft)
+        }
         val sessionSnapshot = sessions.toList()
         viewModelScope.launch(Dispatchers.IO) {
             persistMutex.withLock {
@@ -3780,9 +4501,6 @@ private const val MAX_PROJECT_INSTRUCTION_CHARS = 16_000
 private const val MAX_STORY_LORE_CHARS = 16_000
 private const val MAX_LEVEL_XP = 1_500
 private const val XP_PER_TEXT_MESSAGE = 10
-private const val TPM_LIMIT = 250_000
-private const val TPM_YELLOW_TOKENS = 175_000
-private const val RED_MUTABLE_MESSAGE_FLOOR = 6
 
 private val LEVEL_THRESHOLDS = listOf(
     0,
@@ -3907,14 +4625,54 @@ private fun groupMemberInput(
     """.trimIndent()
 }
 
-private fun exportSessionJson(session: ChatSession): String {
+private suspend fun exportSessionJson(context: android.content.Context, session: ChatSession): String {
+    val sessionJson = session.toJson()
+    
+    val avatarUri = session.persona.avatarUri ?: session.headerAvatarUri
+    if (avatarUri != null) {
+        val base64 = compressImageToBase64(context, avatarUri)
+        if (base64 != null) {
+            sessionJson.put("avatarBase64", base64)
+        }
+    }
+    
+    val bg = session.background
+    if (bg is ChatBackground.CustomImage) {
+        val base64 = compressImageToBase64(context, bg.uri)
+        if (base64 != null) {
+            sessionJson.put("backgroundBase64", base64)
+        }
+    }
+
     return JSONObject()
         .put("format", "zora.session.export")
         .put("version", 1)
         .put("exportedAt", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).format(Date()))
-        .put("session", session.toJson())
+        .put("session", sessionJson)
         .toString(2)
 }
+
+private suspend fun compressImageToBase64(context: android.content.Context, uri: Uri): String? = withContext(Dispatchers.IO) {
+    runCatching {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            val originalBitmap = BitmapFactory.decodeStream(input) ?: return@use null
+            val maxDimension = 800
+            val scaledBitmap = if (originalBitmap.width > maxDimension || originalBitmap.height > maxDimension) {
+                val ratio = originalBitmap.width.toFloat() / originalBitmap.height.toFloat()
+                val newWidth = if (ratio > 1f) maxDimension else (maxDimension * ratio).toInt()
+                val newHeight = if (ratio > 1f) (maxDimension / ratio).toInt() else maxDimension
+                Bitmap.createScaledBitmap(originalBitmap, newWidth, newHeight, true)
+            } else {
+                originalBitmap
+            }
+            val outputStream = java.io.ByteArrayOutputStream()
+            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 80, outputStream)
+            val bytes = outputStream.toByteArray()
+            android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+        }
+    }.getOrNull()
+}
+
 
 private fun exportFileNameFor(session: ChatSession): String {
     val title = session.title.ifBlank {
@@ -3926,7 +4684,17 @@ private fun exportFileNameFor(session: ChatSession): String {
         .take(48)
         .ifBlank { "chat" }
     val date = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
-    return "zora-$title-$date.json"
+    return "zora-$title-$date.zorashare"
+}
+
+private fun configExportFileNameFor(session: ChatSession): String {
+    val title = session.persona.displayName.ifBlank { session.title.ifBlank { "companion" } }
+        .replace(Regex("[^A-Za-z0-9._-]+"), "-")
+        .trim('-', '.', '_')
+        .take(48)
+        .ifBlank { "companion" }
+    val date = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
+    return "zora-config-$title-$date.zorashare"
 }
 
 private fun parseSessionExportJson(raw: String): ChatSession? {
@@ -4049,6 +4817,7 @@ private fun ChatSession.toJson(): JSONObject {
         .put("background", background.toJson())
         .put("preview", preview)
         .put("updatedAt", updatedAt)
+        .put("draft", draft)
         .put(
             "messages",
             JSONArray().apply {
@@ -4120,6 +4889,7 @@ private fun JSONObject.toChatSession(): ChatSession {
         background = optJSONObject("background")?.toChatBackground() ?: ChatBackground.DarkMode,
         preview = optString("preview").ifBlank { previewForRestored(restoredMessages) },
         updatedAt = optString("updatedAt").ifBlank { "Now" },
+        draft = optString("draft"),
         messages = restoredMessages
     )
 }
@@ -4160,6 +4930,7 @@ private fun PersonaUiState.toJson(): JSONObject {
     return JSONObject()
         .put("displayName", displayName)
         .put("tagline", tagline)
+        .put("author", author)
         .put("instructionMode", instructionMode.name)
         .put("beginnerRole", beginnerRole)
         .put("beginnerStyle", beginnerStyle)
@@ -4199,6 +4970,7 @@ private fun JSONObject.toPersonaUiState(): PersonaUiState {
     return PersonaUiState(
         displayName = optString("displayName").ifBlank { "New Persona" },
         tagline = optString("tagline").ifBlank { "Custom roleplay companion" },
+        author = optString("author"),
         instructionMode = restoredInstructionMode,
         beginnerRole = optString("beginnerRole"),
         beginnerStyle = optString("beginnerStyle"),
@@ -4214,7 +4986,7 @@ private fun JSONObject.toPersonaUiState(): PersonaUiState {
         avatarScale = optDouble("avatarScale", 1.0).toFloat().coerceIn(1f, 4f),
         avatarOffsetX = optDouble("avatarOffsetX", 0.0).toFloat().coerceIn(-180f, 180f),
         avatarOffsetY = optDouble("avatarOffsetY", 0.0).toFloat().coerceIn(-180f, 180f),
-        traits = restoredTraits.ifEmpty { listOf("Empathetic", "Encouraging", "Curious", "Calm") }
+        traits = restoredTraits.filterNot { it in listOf("Empathetic", "Encouraging", "Curious", "Calm") }
     )
 }
 
@@ -4313,9 +5085,9 @@ private fun currentDay(): String {
     }.format(Date())
 }
 
-private fun loadMasterPrompt(application: Application): String {
+private fun loadMasterPrompt(application: Application, fileName: String): String {
     return runCatching {
-        application.assets.open("local_master_prompt.txt").bufferedReader().use { reader ->
+        application.assets.open(fileName).bufferedReader().use { reader ->
             reader.readText()
         }
     }.getOrNull()?.takeIf { it.isNotBlank() }.orEmpty()
@@ -4331,6 +5103,9 @@ private fun PersonaUiState.toEntity(
 ): PersonaEntity {
     val basePrompt = effectiveInstructionPrompt()
     val promptSections = mutableListOf(basePrompt)
+    if (traits.isNotEmpty()) {
+        promptSections += "Your personality traits and roleplay tags:\n${traits.joinToString(", ")}\nEmbody these traits and tags fully in your behavior and responses."
+    }
     if (!projectInstruction.isNullOrBlank()) {
         promptSections += "Project instruction shared by every chat in this project. Treat it as workspace context and follow it unless the current user message clearly overrides it:\n${projectInstruction.trim()}"
     }
@@ -4338,7 +5113,7 @@ private fun PersonaUiState.toEntity(
         promptSections += "Story lore and world rules shared by every AI in this session. Treat this as canonical setting context:\n${storyLore.trim()}"
     }
     if (!archivedContext.isNullOrBlank()) {
-        promptSections += "[Archived Context]\n${archivedContext.trim()}\n[End Archived Context]"
+        promptSections += "[Archived Context]\n${ContextTrimPolicy.injectedArchiveSlice(archivedContext)}\n[End Archived Context]"
     }
     if (!memoryBlock.isNullOrBlank()) {
         promptSections += "Global memory shared by the user across sessions. Treat these as stable user facts/preferences unless the current message corrects them:\n${memoryBlock.trim()}"

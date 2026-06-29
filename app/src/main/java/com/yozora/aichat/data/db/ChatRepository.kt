@@ -60,6 +60,7 @@ class ChatRepository private constructor(
                 background = sessionEntity.backgroundJson.toChatBackground(),
                 preview = sessionEntity.preview.ifBlank { "No messages yet" },
                 updatedAt = sessionEntity.updatedAt.ifBlank { "Now" },
+                draft = sessionEntity.draft,
                 messages = dao.messagesForSession(sessionEntity.id).map { it.toChatMessage() }
             )
         }
@@ -89,7 +90,8 @@ class ChatRepository private constructor(
                 backgroundJson = session.background.toJsonString(),
                 preview = session.preview,
                 updatedAt = session.updatedAt,
-                sortOrder = index
+                sortOrder = index,
+                draft = session.draft
             )
         }
         val memberEntities = sessions.flatMap { session ->
@@ -278,7 +280,7 @@ private fun String.toPersonaUiState(): PersonaUiState {
         avatarScale = json.optDouble("avatarScale", 1.0).toFloat().coerceIn(1f, 4f),
         avatarOffsetX = json.optDouble("avatarOffsetX", 0.0).toFloat().coerceIn(-180f, 180f),
         avatarOffsetY = json.optDouble("avatarOffsetY", 0.0).toFloat().coerceIn(-180f, 180f),
-        traits = traits.ifEmpty { listOf("Empathetic", "Encouraging", "Curious", "Calm") }
+        traits = traits.filterNot { it in listOf("Empathetic", "Encouraging", "Curious", "Calm") }
     )
 }
 
