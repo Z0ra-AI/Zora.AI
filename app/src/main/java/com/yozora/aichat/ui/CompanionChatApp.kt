@@ -7428,7 +7428,11 @@ private fun RoleplayHubLayout(
                     DiscoverScreen(
                         viewModel = viewModel,
                         onSelectCharacter = { preset ->
-                            val existing = viewModel.sessions.firstOrNull { it.persona.displayName.equals(preset.name, ignoreCase = true) }
+                            val existing = if (preset.sessionId != null) {
+                                viewModel.sessions.firstOrNull { it.id == preset.sessionId }
+                            } else {
+                                viewModel.sessions.firstOrNull { it.persona.displayName.equals(preset.name, ignoreCase = true) }
+                            }
                             if (existing != null) {
                                 viewModel.selectSession(existing.id)
                                 onOpenChat()
@@ -7745,6 +7749,10 @@ private fun DiscoverScreen(
                 viewModel.duplicateSessionSettings(session.id)
                 actionTarget = null
             },
+            onCloneSession = {
+                viewModel.cloneSession(session.id)
+                actionTarget = null
+            },
             onDelete = {
                 viewModel.deleteSession(session.id)
                 actionTarget = null
@@ -7867,6 +7875,7 @@ private fun RoleplayActionSheet(
     onDismiss: () -> Unit,
     onExport: () -> Unit,
     onCloneConfig: () -> Unit,
+    onCloneSession: () -> Unit,
     onDelete: () -> Unit
 ) {
     Box(
@@ -7923,6 +7932,11 @@ private fun RoleplayActionSheet(
                     icon = Icons.Rounded.ContentCopy,
                     label = stringResource(R.string.action_clone_config),
                     onClick = onCloneConfig
+                )
+                ActionSheetRow(
+                    icon = Icons.Rounded.ContentCopy,
+                    label = stringResource(R.string.action_clone_session),
+                    onClick = onCloneSession
                 )
                 ActionSheetRow(
                     icon = Icons.Rounded.DeleteOutline,
@@ -8071,6 +8085,10 @@ private fun ChatsScreen(
             },
             onCloneConfig = {
                 viewModel.duplicateSessionSettings(session.id)
+                actionTarget = null
+            },
+            onCloneSession = {
+                viewModel.cloneSession(session.id)
                 actionTarget = null
             },
             onDelete = {
